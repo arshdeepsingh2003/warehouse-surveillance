@@ -1,24 +1,139 @@
-from collections import defaultdict
+"""
+ws/connection_manager.py
+────────────────────────
+WebSocket Connection Manager
+
+Manages all active WebSocket client connections.
+
+Key responsibilities:
+  1. Track who is connected (list of WebSocket objects).
+  2. Broadcast messages to ALL connected clients (e.g. new alert events).
+  3. Broadcast to a specific "room" (e.g. only subscribers to a specific camera).
+  4. Cleanly remove disconnected clients.
+
+This file implements the WebSocket Connection Manager for your AI surveillance system 🌐⚡
+
+It handles all real-time communication between:
+
+Backend ↔ Dashboard Frontend
+
+This is what enables:
+
+✅ live alerts
+✅ instant dashboard updates
+✅ real-time notifications
+✅ live activity feeds
+✅ camera-specific subscriptions
+
+without refreshing the page.
+"""
+
+import json
+import logging
+from typing import Optional
+from fastapi import WebSocket
+
+logger = logging.getLogger(__name__)
 
 
 class ConnectionManager:
-    def __init__(self):
-        self.rooms: dict[str, list] = defaultdict(list)
+    """
+    Central registry of all live WebSocket connections.It tracks ALL connected clients.
 
-    async def connect(self, room: str, websocket):
-        self.rooms[room].append(websocket)
+    Usage:
+        manager = ConnectionManager()
 
-    async def disconnect(self, room: str, websocket):
-        self.rooms[room].remove(websocket)
-        if not self.rooms[room]:
-            del self.rooms[room]
+        # In your WebSocket route:
+        await manager.connect(websocket)
+        try:
+            while True:
+                data = await websocket.receive_text()
+                ...
+        except WebSocketDisconnect:
+            manager.disconnect(websocket)
 
-    async def broadcast(self, room: str, message: dict):
-        for ws in self.rooms.get(room, []):
+        # From anywhere (e.g. when an alert fires):
+        await manager.broadcast({"type": "alert_triggered", ...})
+    """
+
+    def __init__(self) -> None:
+        # Maps room_id → list of connected WebSockets
+        # The special room "global" gets every broadcast.
+        self._rooms: dict[str, list[WebSocket]] = {"global": []} # The room dictionary is used to organize WebSocket clients into groups.
+        # list_of_connected_clients
+
+    # Connection lifecycle
+
+    async def connect(self, websocket: WebSocket, room: str = "global") -> None:
+        """
+        Accept a new WebSocket connection and register it.
+
+        Args:
+            websocket: The FastAPI WebSocket object.
+            room:      Optional room name (e.g. "cam-01") for targeted broadcasts.
+                       Every client is also added to "global".
+        """
+        await websocket.accept()
+
+        # Always join global room
+        self._rooms["global"].append(websocket)
+
+        # Also join the specified room if it's not global
+        if room != "global":
+            if room not in self._rooms:
+                self._rooms[room] = []
+            self._rooms[room].append(websocket)
+
+        logger.info(f"Client connected to room '{room}'. Total in global: {len(self._rooms['global'])}")
+
+    def disconnect(self, websocket: WebSocket) -> None:
+        """
+        Remove a WebSocket from all rooms.
+        Call this when the client disconnects or an error occurs.
+        """
+        for room_clients in self._rooms.values():
+            if websocket in room_clients:
+                room_clients.remove(websocket)
+        logger.info(f"Client disconnected. Total in global: {len(self._rooms['global'])}")
+
+    # Sending messages
+
+    async def broadcast(self, message: dict, room: str = "global") -> None:
+        """
+        Send a JSON message to all clients in a room.
+
+        Args:
+            message: Python dict — will be JSON-serialised automatically.
+            room:    Target room. Defaults to "global" (all connected clients).
+        """
+        payload = json.dumps(message, default=str)   # default=str handles datetime objects
+        targets = self._rooms.get(room, [])
+        disconnected = []
+
+        for websocket in targets:
             try:
-                await ws.send_json(message)
+                await websocket.send_text(payload)
             except Exception:
-                pass
+                # Client dropped unexpectedly — mark for cleanup
+                disconnected.append(websocket)
+
+        # Clean up dead connections
+        for ws in disconnected:
+            self.disconnect(ws)
+
+    async def send_personal(self, websocket: WebSocket, message: dict) -> None:
+        """Send a message to ONE specific client."""
+        try:
+            await websocket.send_text(json.dumps(message, default=str))
+        except Exception:
+            self.disconnect(websocket)
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def connection_count(self, room: str = "global") -> int:
+        """How many clients are in a given room."""
+        return len(self._rooms.get(room, []))
 
 
+# Single shared instance used across the whole application
 manager = ConnectionManager()
