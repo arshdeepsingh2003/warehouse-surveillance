@@ -1,40 +1,139 @@
+// types/index.ts
+// These mirror the backend Pydantic schemas exactly.
+
+// ── Cameras ───────────────────────────────────────────────────────────────────
+export type CameraStatus = 'online' | 'offline' | 'unknown'
+export type CameraType   = 'rtsp' | 'file' | 'mock'
+
 export interface Camera {
-  id: string;
-  name: string;
-  rtsp_url: string;
-  zone_id: string;
-  status: 'online' | 'offline';
+  id:          string
+  name:        string
+  location:    string
+  zone:        string
+  stream_url:  string
+  camera_type: CameraType
+  status:      CameraStatus
+  fps:         number
+  latency_ms:  number
+  created_at:  string
+  updated_at:  string
 }
+
+// ── Alerts ────────────────────────────────────────────────────────────────────
+export type AlertSeverity = 'low' | 'medium' | 'high'
+export type AlertStatus   = 'active' | 'resolved'
+export type AlertType     =
+  | 'unauthorized_access'
+  | 'loitering'
+  | 'ppe_violation'
+  | 'worker_fall'
+  | 'restricted_zone_entry'
+  | 'suspicious_activity'
+  | 'theft_attempt'
+  | 'unknown'
 
 export interface Alert {
-  id: string;
-  camera_id: string;
-  type: string;
-  severity: 'low' | 'medium' | 'high' | 'critical';
-  description: string;
-  timestamp: string;
-  acknowledged: boolean;
+  id:           string
+  camera_id:    string
+  zone:         string
+  alert_type:   AlertType
+  severity:     AlertSeverity
+  description:  string
+  person_id:    string | null
+  snapshot_url: string | null
+  status:       AlertStatus
+  confidence:   number
+  triggered_at: string
+  resolved_at:  string | null
+  resolved_by:  string | null
 }
+
+// ── Activities ────────────────────────────────────────────────────────────────
+export type ActivityType  = 'walking' | 'standing' | 'carrying_object' | 'loitering' |
+                            'running' | 'falling'  | 'handling_items'  | 'unauthorized_entry' | 'unknown'
+export type AnomalyLabel  = 'normal' | 'anomaly'
 
 export interface Activity {
-  id: string;
-  camera_id: string;
-  person_id: string;
-  activity_type: string;
-  timestamp: string;
-  metadata: Record<string, unknown>;
+  id:            string
+  person_id:     string
+  camera_id:     string
+  zone:          string
+  activity_type: ActivityType
+  description:   string
+  anomaly_label: AnomalyLabel
+  dwell_seconds: number
+  confidence:    number
+  timestamp:     string
 }
 
-export interface Person {
-  id: string;
-  track_id: string;
-  appearance_count: number;
-  first_seen: string;
-  last_seen: string;
+export interface PersonTimelineEntry {
+  zone:          string
+  camera_id:     string
+  activity_type: ActivityType
+  description:   string
+  entry_time:    string
+  exit_time:     string | null
+  dwell_seconds: number
 }
 
-export interface Zone {
-  id: string;
-  name: string;
-  cameras: Camera[];
+export interface PersonTimeline {
+  person_id: string
+  timeline:  PersonTimelineEntry[]
+}
+
+// ── Analytics ─────────────────────────────────────────────────────────────────
+export interface DashboardSummary {
+  total_cameras:        number
+  cameras_online:       number
+  total_alerts_today:   number
+  active_alerts:        number
+  high_severity_alerts: number
+  people_detected:      number
+  most_risky_zone:      string
+  peak_activity_hour:   string
+  system_status:        string
+}
+
+export interface AlertTrendPoint { hour: string; count: number }
+export interface ZoneRisk        { zone: string; incidents: number; percentage: number }
+
+export interface AnalyticsSummary {
+  summary:     DashboardSummary
+  alert_trend: AlertTrendPoint[]
+  zone_risk:   ZoneRisk[]
+}
+
+// ── WebSocket events ──────────────────────────────────────────────────────────
+export type WSEventType = 'connected' | 'alert_triggered' | 'alert_resolved' |
+                          'frame_update' | 'camera_status' | 'ping'
+
+export interface WSFramePerson {
+  person_id:     string
+  zone:          string
+  activity:      string
+  dwell_seconds: number
+}
+
+export interface WSEvent {
+  type:        WSEventType
+  timestamp:   string
+  // alert_triggered / alert_resolved
+  alert_id?:   string
+  alert?:      Alert
+  camera_id?:  string
+  zone?:       string
+  alert_type?: AlertType
+  severity?:   AlertSeverity
+  description?: string
+  person_id?:  string
+  confidence?: number
+  snapshot_url?: string
+  // frame_update
+  persons?:    WSFramePerson[]
+  // camera_status
+  status?:     CameraStatus
+  fps?:        number
+  latency_ms?: number
+  // connected
+  message?:    string
 }

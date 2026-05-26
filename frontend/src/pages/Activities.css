@@ -1,0 +1,126 @@
+.activities-page {
+  padding: 20px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow: hidden;
+}
+
+.activities-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.activities-search {
+  position: relative;
+  flex: 1;
+  min-width: 192px;
+}
+.activities-search-icon {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-muted);
+}
+.activities-search-input {
+  width: 100%;
+  background: var(--surface-800);
+  border: 1px solid var(--surface-600);
+  border-radius: 8px;
+  padding: 8px 12px 8px 36px;
+  font-size: 14px;
+  color: var(--text-primary);
+  font-family: inherit;
+  outline: none;
+}
+.activities-search-input::placeholder { color: var(--text-muted); }
+.activities-search-input:focus {
+  border-color: rgba(var(--accent-cyan-rgb), 0.5);
+}
+
+.activities-filter-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s, color 0.15s;
+}
+.activities-filter-off {
+  background: var(--surface-800);
+  border-color: var(--surface-600);
+  color: var(--text-secondary);
+}
+.activities-filter-off:hover { color: var(--text-primary); }
+.activities-filter-on {
+  background: rgba(var(--accent-red-rgb), 0.15);
+  border-color: rgba(var(--accent-red-rgb), 0.5);
+  color: var(--accent-red);
+}
+
+.activities-count {
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+.activities-table-wrap {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+.activities-table-scroll {
+  overflow-y: auto;
+  flex: 1;
+}
+.activities-loading {
+  padding: 32px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.activities-person-id {
+  font-family: var(--font-mono);
+  color: var(--accent-cyan);
+  font-size: 12px;
+}
+.activities-camera-id {
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.activities-zone {
+  font-size: 12px;
+}
+.activities-activity-type {
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.activities-description {
+  font-size: 10px;
+  color: var(--text-muted);
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.activities-dwell {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.activities-timestamp {
+  font-size: 12px;
+  color: var(--text-muted);
+}

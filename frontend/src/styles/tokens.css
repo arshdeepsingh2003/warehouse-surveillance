@@ -1,0 +1,31 @@
+:root {
+  /* Surface colors */
+  --surface-900: #0a0e1a;
+  --surface-800: #0f1524;
+  --surface-700: #151d30;
+  --surface-600: #253050;
+  --surface-500: #2f3b5c;
+
+  /* Text colors */
+  --text-primary: #e8edf8;
+  --text-secondary: #b0b8cc;
+  --text-muted: #8892a4;
+
+  /* Accent colors */
+  --accent-cyan: #00e5ff;
+  --accent-red: #ff1744;
+  --accent-amber: #ffab00;
+  --accent-green: #00e676;
+  --accent-purple: #d500f9;
+
+  /* RGB values for opacity */
+  --accent-cyan-rgb: 0, 229, 255;
+  --accent-red-rgb: 255, 23, 68;
+  --accent-amber-rgb: 255, 171, 0;
+  --accent-green-rgb: 0, 230, 118;
+  --accent-purple-rgb: 213, 0, 249;
+
+  /* Fonts */
+  --font-sans: 'DM Sans', sans-serif;
+  --font-mono: 'JetBrains Mono', 'DM Mono', monospace;
+}
