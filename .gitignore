@@ -47,3 +47,10 @@ coverage/
 # Frontend environment overrides
 frontend/.env
 frontend/.env.local
+
+# Generated mock video files (regenerate with scripts/generate_mock_videos.sh)
+ai-service/mock_sources/
+
+# Debug / temp files
+ai-service/debug_frame_*.jpg
+ai-service/*.jpg

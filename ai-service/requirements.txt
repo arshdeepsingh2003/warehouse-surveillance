@@ -1,0 +1,27 @@
+# ── Video / Computer Vision ───────────────────────────────────────────────────
+opencv-python-headless==4.9.0.80   # Frame reading without GUI (server-safe)
+numpy==1.26.4                       # Array ops on frames
+
+# ── Async HTTP (push events to backend API) ───────────────────────────────────
+aiohttp==3.9.5
+aiofiles==23.2.1
+
+# ── WebSocket client (push live events to backend WS hub) ────────────────────
+websockets==12.0
+
+# ── Config / utilities ────────────────────────────────────────────────────────
+python-dotenv==1.0.1
+pydantic==2.7.1
+pydantic-settings==2.3.0
+
+# ── HLS streaming (serve frames as MJPEG/HLS from this service) ───────────────
+# fastapi + uvicorn reused for the stream server endpoints
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FUTURE — uncomment when integrating real AI models
+# ultralytics==8.2.0    # YOLOv8 person detection
+# torch==2.3.0          # PyTorch (GPU-accelerated inference)
+# deep-sort-realtime==1.3.2  # DeepSORT person re-identification
+# openai==1.30.0        # GPT-4V VLM queries
