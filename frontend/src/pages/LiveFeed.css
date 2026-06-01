@@ -1,9 +1,20 @@
 .livefeed {
   padding: 20px;
-  height: 100%;
   overflow-y: auto;
+  height: 100%;
 }
-.livefeed-section { margin-bottom: 16px; }
+.livefeed-section { 
+  margin-bottom: 16px;
+}
+.livefeed-grid-container {
+  margin-bottom: 16px;
+}
+.livefeed-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+  padding-top: 8px;
+}
 
 .livefeed-status {
   display: flex;
@@ -45,10 +56,4 @@
   font-size: 12px;
   color: var(--text-muted);
   font-family: var(--font-mono);
-}
-.livefeed-hint {
-  font-size: 12px;
-  color: var(--text-muted);
-  text-align: center;
-  padding-top: 8px;
 }

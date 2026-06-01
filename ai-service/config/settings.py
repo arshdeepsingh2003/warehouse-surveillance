@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     LOOP_VIDEO:        bool  = True
     ALERT_PROBABILITY: float = 0.05
     BATCH_SIZE:        int   = 30
+    LOITERING_SECONDS: float = 10.0
 
     model_config = SettingsConfigDict(
         env_file=".env",

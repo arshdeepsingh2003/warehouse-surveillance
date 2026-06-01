@@ -112,6 +112,9 @@ export interface WSFramePerson {
   zone:          string
   activity:      string
   dwell_seconds: number
+  // Optional visual fields supplied by the AI service
+  bbox?:         number[]   // [x1,y1,x2,y2]
+  center?:       number[]   // [cx,cy]
 }
 
 export interface WSEvent {

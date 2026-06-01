@@ -169,6 +169,8 @@ class APIClient:
         zone:       str,
         activity:   str,
         dwell_secs: int,
+        bbox:       list[int] | None = None,
+        center:     list[int] | None = None,
     ) -> None:
         """
         POST a frame_update event so the backend WS hub broadcasts it.
@@ -177,15 +179,21 @@ class APIClient:
         dict and broadcasts it directly to all WebSocket clients.
         This gives the dashboard real-time person tracking updates.
         """
+        person_obj = {
+            "person_id":     person_id,
+            "zone":          zone,
+            "activity":      activity,
+            "dwell_seconds": dwell_secs,
+        }
+        if bbox is not None:
+            person_obj["bbox"] = bbox
+        if center is not None:
+            person_obj["center"] = center
+
         payload = {
             "type":      "frame_update",
             "camera_id": camera_id,
-            "persons": [{
-                "person_id":     person_id,
-                "zone":          zone,
-                "activity":      activity,
-                "dwell_seconds": dwell_secs,
-            }],
+            "persons": [person_obj],
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         await self._post("/api/v1/events/broadcast", payload)

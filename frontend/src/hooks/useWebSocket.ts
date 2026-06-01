@@ -6,6 +6,7 @@ import { useEffect, useRef, useCallback } from 'react'
 import { WS_URL } from '../api/client'
 import { useAlertStore } from '../store/alertStore'
 import { useCameraStore } from '../store/cameraStore'
+import { useTrackingStore } from '../store/trackingStore'
 import type { WSEvent } from '../types'
 
 export function useWebSocket() {
@@ -13,6 +14,7 @@ export function useWebSocket() {
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const addLiveAlert   = useAlertStore(s => s.addLiveAlert)
   const updateCamStatus = useCameraStore(s => s.updateCameraStatus)
+  const updateTracking = useTrackingStore(s => s.updateTracking)
 
   const connect = useCallback(() => {
     if (ws.current?.readyState === WebSocket.OPEN) return
@@ -32,6 +34,12 @@ export function useWebSocket() {
         const data: WSEvent = JSON.parse(event.data)
 
         switch (data.type) {
+          case 'frame_update':
+            if (data.camera_id && data.persons) {
+              console.log(`[WS] frame_update for ${data.camera_id}: ${data.persons.length} persons`)
+              updateTracking(data.camera_id, data.persons, data.timestamp)
+            }
+            break
           case 'alert_triggered':
             // Push alert into the live alert store so Alert Panel updates instantly
             if (data.alert_id) {
@@ -79,7 +87,7 @@ export function useWebSocket() {
     ws.current.onerror = () => {
       ws.current?.close()
     }
-  }, [addLiveAlert, updateCamStatus])
+  }, [addLiveAlert, updateCamStatus, updateTracking])
 
   useEffect(() => {
     connect()

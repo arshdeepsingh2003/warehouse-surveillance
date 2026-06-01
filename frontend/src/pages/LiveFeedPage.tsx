@@ -35,7 +35,7 @@ export function LiveFeedPage() {
         </div>
       </div>
 
-      <div className="livefeed-section">
+      <div className="livefeed-grid-container">
         <CameraGrid />
       </div>
 

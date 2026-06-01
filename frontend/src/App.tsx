@@ -40,7 +40,7 @@ function AppInner() {
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         <Header wsConnected={connected} pageTitle={PAGE_TITLES[page] ?? page} />
 
-        <main className="flex-1 overflow-hidden">
+        <main className="flex-1 overflow-auto min-h-0">
           {page === 'dashboard'  && <DashboardPage />}
           {page === 'livefeed'   && <LiveFeedPage  />}
           {page === 'alerts'     && <AlertsPage    />}

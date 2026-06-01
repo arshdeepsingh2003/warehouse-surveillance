@@ -10,8 +10,8 @@ import { Maximize2, WifiOff, Wifi, AlertTriangle, X } from 'lucide-react'
 import { api } from '../../api/client'
 import { useCameraStore } from '../../store/cameraStore'
 import { useAlertStore } from '../../store/alertStore'
-// import { useTrackingStore } from '../../store/trackingStore'
-// import { BoundingBoxOverlay, PersonTrackingBadge } from './BoundingBoxOverlay'
+import { useTrackingStore } from '../../store/trackingStore'
+import { BoundingBoxOverlay } from './BoundingBoxOverlay'
 import type { Camera } from '../../types'
 
 const STREAM_BASE = (import.meta as any).env?.VITE_STREAM_URL ?? 'http://localhost:8001'
@@ -49,7 +49,7 @@ function CameraCard({ camera, onExpand, expanded }: CardProps) {
   }, [online])
 
   // Get tracked persons for this camera (from WS)
-  // const persons = useTrackingStore(s => s.getPersonsForCamera(camera.id))
+  const persons = useTrackingStore(s => s.getPersonsForCamera(camera.id))
 
   // Check if this camera has active alerts
   const liveAlerts = useAlertStore(s => s.liveAlerts)
@@ -76,6 +76,11 @@ function CameraCard({ camera, onExpand, expanded }: CardProps) {
               onError={() => { setImgErr(true); setLoading(false) }}
               crossOrigin="anonymous"
             />
+
+            {/* SVG overlay layer (interactive) — draws boxes from WS events */}
+            {!loading && (
+              <BoundingBoxOverlay cameraId={camera.id} persons={persons} />
+            )}
 
             {/* Loading spinner */}
             {loading && (

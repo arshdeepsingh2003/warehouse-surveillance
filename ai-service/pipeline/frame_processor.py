@@ -53,6 +53,8 @@ import numpy as np
 from streams.frame_reader import FrameData
 from pipeline.api_client import APIClient
 from config.settings import settings
+from ai.overlay.frame_overlay import FrameOverlay
+from ai.tracker.person_tracker import TrackedPerson
 
 logger = logging.getLogger(__name__)
 
@@ -212,14 +214,53 @@ class FrameProcessor:
                 snapshot_b64=snapshot,
             )
 
-        # ── 3. Broadcast frame update via WS hub ──────────────────────────────
-        await self._api.broadcast_frame_update(
-            camera_id= cam_id,
-            person_id= person_id,
-            zone=      zone,
-            activity=  act_type,
-            dwell_secs=dwell_seconds,
-        )
+        # ── 3/4. Annotate a representative frame for MJPEG streaming and
+        #       broadcast an enriched frame_update (includes bbox/center)
+        #       so the frontend overlay can render tracked positions.
+        try:
+            mid = len(batch) // 2
+            frame = batch[mid].frame.copy()
+            h, w = frame.shape[:2]
+
+            # Generate a plausible mock bbox in the centre of the frame
+            bw, bh = int(w * 0.18), int(h * 0.35)
+            cx, cy = w // 2, h // 2
+            x1 = max(0, cx - bw // 2)
+            y1 = max(0, cy - bh // 2)
+            x2 = min(w - 1, x1 + bw)
+            y2 = min(h - 1, y1 + bh)
+
+            # Build a TrackedPerson for the overlay
+            mock_person = TrackedPerson(
+                track_id=1,
+                bbox=(x1, y1, x2, y2),
+                confidence=confidence,
+                zone_id=zone,
+                zone_name=zone.replace("_", " ").title(),
+                is_restricted=(zone == "restricted_area"),
+                age=5,
+                dwell_time=dwell_seconds,
+                is_lost=False,
+                velocity=(0.0, 0.0),
+            )
+
+            overlay = FrameOverlay(camera_id=cam_id)
+            annotated = overlay.draw(frame, [mock_person], [], [])
+            # Encode annotated frame and replace latest JPEG for this camera
+            self._latest_frames[cam_id] = self._encode_frame(annotated)
+            # Broadcast enriched frame update (includes bbox center)
+            await self._api.broadcast_frame_update(
+                camera_id=cam_id,
+                person_id=person_id,
+                zone=zone,
+                activity=act_type,
+                dwell_secs=dwell_seconds,
+                bbox=[x1, y1, x2, y2],
+                center=[cx, cy],
+            )
+        except Exception:
+            # Don't let overlay failures break analysis
+            logger.exception("Failed to annotate frame for camera %s", cam_id)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
