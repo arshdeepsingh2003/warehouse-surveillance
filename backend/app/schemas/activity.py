@@ -1,27 +1,20 @@
 """
+schemas/activity.py
+───────────────────
 Pydantic schemas for the Activity resource.
 
 An Activity is a single detected action for one tracked person in one frame.
 The VLM generates the description; the activity is then persisted and served
 by the Activity Log API.
-
-This file defines the Activity Tracking System for your AI surveillance platform.
-It stores and serves information about:
-
-what a person is doing
-where they are
-how long they stayed
-whether activity is suspicious
-movement timeline of a person
-
-Think of this as the behavior logging system of your project 
-
 """
 
 from datetime import datetime
 from enum import Enum
 from typing import Optional
 from pydantic import BaseModel, Field
+
+
+# ── Enums ─────────────────────────────────────────────────────────────────────
 
 class ActivityType(str, Enum):
     """
@@ -44,7 +37,7 @@ class AnomalyLabel(str, Enum):
     ANOMALY = "anomaly"
 
 
-# Base
+# ── Base ──────────────────────────────────────────────────────────────────────
 
 class ActivityBase(BaseModel):
     person_id:     str           = Field(..., description="Tracked person ID, e.g. 'P-1025'")
@@ -56,7 +49,7 @@ class ActivityBase(BaseModel):
     dwell_seconds: int           = Field(0, description="Seconds person has been in this zone")
 
 
-# Response 
+# ── Response ──────────────────────────────────────────────────────────────────
 
 class ActivityOut(ActivityBase):
     """Full activity log entry returned by the API."""
@@ -67,7 +60,7 @@ class ActivityOut(ActivityBase):
     model_config = {"from_attributes": True}
 
 
-# Person timeline entry
+# ── Person timeline entry ─────────────────────────────────────────────────────
 
 class PersonTimelineEntry(BaseModel):
     """

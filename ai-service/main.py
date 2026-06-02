@@ -39,10 +39,13 @@ import uvicorn
 
 from config.settings import settings
 from pipeline.api_client import APIClient
-from pipeline.frame_processor import FrameProcessor
 from streams.stream_manager import StreamManager
 from streams.stream_server import create_stream_app
 from utils.heartbeat import run_heartbeat
+
+# Use VLMAIFrameProcessor which includes ZoneSummarizer + real AI detection.
+# Switch to mock FrameProcessor by importing it instead when testing streams only.
+from pipeline.ai_frame_processor import VLMAIFrameProcessor as FrameProcessor
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -69,6 +72,7 @@ async def main() -> None:
     # ── 1. Create shared objects ───────────────────────────────────────────────
     api_client = APIClient()
     processor  = FrameProcessor(api_client)
+    processor.start_background_tasks()
     manager    = StreamManager()
 
     # ── 2. Start API client ────────────────────────────────────────────────────

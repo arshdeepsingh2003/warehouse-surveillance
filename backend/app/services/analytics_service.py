@@ -5,26 +5,6 @@ Business logic for the Analytics API.
 
 Aggregates data from cameras, alerts, and activities into
 KPI summaries and chart data for the dashboard Analytics page.
-
-This file implements the Analytics Business Logic Layer for your AI surveillance dashboard 📊
-
-It is responsible for collecting and aggregating data from:
-
-cameras
-alerts
-activities
-
-and converting it into dashboard-ready analytics like:
-
-✅ KPI cards
-✅ line charts
-✅ donut charts
-✅ risk summaries
-✅ dashboard insights
-
-Architecture:
-
-Routes ↔ Analytics Service ↔ Mock Data / Database
 """
 
 from app.core.config import settings

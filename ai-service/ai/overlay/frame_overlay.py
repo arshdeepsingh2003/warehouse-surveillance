@@ -105,6 +105,8 @@ class FrameOverlay:
 
         # ── 2. Draw each tracked person ───────────────────────────────────────
         for person in persons:
+            if person.is_lost:
+                continue  # skip ghost boxes — tracker cleans them up quickly
             activity = act_by_track.get(person.track_id)
             is_alert = person.person_id in alert_person_ids
             self._draw_person(frame, person, activity, is_alert)
@@ -167,14 +169,8 @@ class FrameOverlay:
             color = _CYAN
             thickness = 1
 
-        # Dim lost tracks
-        if person.is_lost:
-            color = tuple(int(c * 0.5) for c in color)
-
         # ── Bounding box ──────────────────────────────────────────────────────
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
-
-        # Corner accent marks (more visible than full box)
         _draw_corners(frame, x1, y1, x2, y2, color, size=8)
 
         # ── Person ID badge ───────────────────────────────────────────────────

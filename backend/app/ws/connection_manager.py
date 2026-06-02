@@ -11,21 +11,10 @@ Key responsibilities:
   3. Broadcast to a specific "room" (e.g. only subscribers to a specific camera).
   4. Cleanly remove disconnected clients.
 
-This file implements the WebSocket Connection Manager for your AI surveillance system 🌐⚡
-
-It handles all real-time communication between:
-
-Backend ↔ Dashboard Frontend
-
-This is what enables:
-
-✅ live alerts
-✅ instant dashboard updates
-✅ real-time notifications
-✅ live activity feeds
-✅ camera-specific subscriptions
-
-without refreshing the page.
+This is intentionally simple (in-memory, single process).
+For multi-worker production deployments, replace the `active_connections`
+list with a Redis pub/sub channel so that any backend worker can broadcast
+to any frontend client, regardless of which worker they're connected to.
 """
 
 import json
@@ -38,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 class ConnectionManager:
     """
-    Central registry of all live WebSocket connections.It tracks ALL connected clients.
+    Central registry of all live WebSocket connections.
 
     Usage:
         manager = ConnectionManager()
@@ -59,10 +48,9 @@ class ConnectionManager:
     def __init__(self) -> None:
         # Maps room_id → list of connected WebSockets
         # The special room "global" gets every broadcast.
-        self._rooms: dict[str, list[WebSocket]] = {"global": []} # The room dictionary is used to organize WebSocket clients into groups.
-        # list_of_connected_clients
+        self._rooms: dict[str, list[WebSocket]] = {"global": []}
 
-    # Connection lifecycle
+    # ── Connection lifecycle ──────────────────────────────────────────────────
 
     async def connect(self, websocket: WebSocket, room: str = "global") -> None:
         """
@@ -96,7 +84,7 @@ class ConnectionManager:
                 room_clients.remove(websocket)
         logger.info(f"Client disconnected. Total in global: {len(self._rooms['global'])}")
 
-    # Sending messages
+    # ── Sending messages ──────────────────────────────────────────────────────
 
     async def broadcast(self, message: dict, room: str = "global") -> None:
         """

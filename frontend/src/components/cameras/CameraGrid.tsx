@@ -12,6 +12,7 @@ import { useCameraStore } from '../../store/cameraStore'
 import { useAlertStore } from '../../store/alertStore'
 import { useTrackingStore } from '../../store/trackingStore'
 import { BoundingBoxOverlay } from './BoundingBoxOverlay'
+import { ErrorBoundary } from '../common/ErrorBoundary'
 import type { Camera } from '../../types'
 
 const STREAM_BASE = (import.meta as any).env?.VITE_STREAM_URL ?? 'http://localhost:8001'
@@ -246,9 +247,11 @@ export function CameraGrid() {
       {/* Grid */}
       <div className="gap-3 transition-all" style={{ display: 'grid', gridTemplateColumns: `repeat(${cols}, 1fr)` }}>
         {shown.map(cam => (
-          <CameraCard key={cam.id} camera={cam}
-            expanded={expandedId === cam.id}
-            onExpand={() => setExpandedId(expandedId === cam.id ? null : cam.id)} />
+          <ErrorBoundary key={cam.id}>
+            <CameraCard camera={cam}
+              expanded={expandedId === cam.id}
+              onExpand={() => setExpandedId(expandedId === cam.id ? null : cam.id)} />
+          </ErrorBoundary>
         ))}
       </div>
 

@@ -6,29 +6,6 @@ Business logic for the Activity resource.
 Activities are VLM-generated descriptions of what each tracked person
 is doing in a given frame. They form the raw material for the
 Activity Log and Person Timeline pages on the dashboard.
-
-This file implements the Activity Business Logic Layer of your AI surveillance system 👤📹
-
-It manages:
-
-✅ fetching activity logs
-✅ filtering activities
-✅ anomaly-only detection
-✅ building person movement timelines
-✅ sorting chronological movement
-✅ supporting mock/demo mode
-
-It powers:
-
-Activity Log page
-Person Tracking page
-Timeline visualization
-Movement analytics
-
-Architecture:
-
-Routes ↔ Activity Service ↔ Mock Data / Database
-
 """
 
 from typing import Optional
@@ -58,33 +35,15 @@ async def get_all_activities(
         List of ActivityOut, newest first.
     """
     if settings.USE_MOCK_DATA:
-        print("=== DEBUG: get_all_activities called ===")
-        print(f"settings.USE_MOCK_DATA: {settings.USE_MOCK_DATA}")
-        print(f"camera_id: {repr(camera_id)}")
-        print(f"zone: {repr(zone)}")
-        print(f"person_id: {repr(person_id)}")
-        print(f"anomaly_only: {repr(anomaly_only)}")
-        print(f"limit: {limit}")
-        print(f"len(MOCK_ACTIVITIES): {len(MOCK_ACTIVITIES)}")
-        
         acts = MOCK_ACTIVITIES.copy()
-        print(f"Initial acts count: {len(acts)}")
 
-        if camera_id:
-            acts = [a for a in acts if a["camera_id"] == camera_id]
-            print(f"After camera_id filter: {len(acts)}")
-        if zone:
-            acts = [a for a in acts if a["zone"]       == zone]
-            print(f"After zone filter: {len(acts)}")
-        if person_id:
-            acts = [a for a in acts if a["person_id"]  == person_id]
-            print(f"After person_id filter: {len(acts)}")
+        if camera_id:   acts = [a for a in acts if a["camera_id"] == camera_id]
+        if zone:        acts = [a for a in acts if a["zone"]       == zone]
+        if person_id:   acts = [a for a in acts if a["person_id"]  == person_id]
         if anomaly_only:
             acts = [a for a in acts if a["anomaly_label"] == "anomaly"]
-            print(f"After anomaly_only filter: {len(acts)}")
 
         acts.sort(key=lambda a: a["timestamp"], reverse=True)
-        print(f"Final acts (first 3): {acts[:3] if acts else 'empty'}")
         return [ActivityOut(**a) for a in acts[:limit]]
 
     raise NotImplementedError("Database not yet connected.")
@@ -98,11 +57,9 @@ async def get_person_timeline(person_id: str) -> Optional[PersonTimeline]:
     e.g. Entry Zone → Storage Area → Restricted Area.
     """
     if settings.USE_MOCK_DATA:
-        print(person_id)
         person_acts = [
             a for a in MOCK_ACTIVITIES if a["person_id"] == person_id
         ]
-        print(len(person_acts))
 
         if not person_acts:
             return None

@@ -1,4 +1,6 @@
 """
+schemas/camera.py
+─────────────────
 Pydantic schemas for the Camera resource.
 
 A "schema" describes the shape of data going IN (request body) and OUT
@@ -9,18 +11,14 @@ Naming convention used here:
   CameraBase     – shared fields
   CameraCreate   – fields required to CREATE a camera (POST body)
   CameraOut      – what we send BACK to the client (response)
-
-This file defines the data structure for your Camera API using Pydantic schemas in a FastAPI project.
-Think of it as the rulebook for what camera data should look like when:
-
-a client sends data to the API
-the API sends data back
-FastAPI validates requests automatically
 """
 
 from datetime import datetime
 from enum import Enum
 from pydantic import BaseModel, Field
+
+
+# ── Enums ─────────────────────────────────────────────────────────────────────
 
 class CameraStatus(str, Enum):
     """Possible live states for a camera stream."""
@@ -36,6 +34,8 @@ class CameraType(str, Enum):
     MOCK   = "mock"    # Simulated stream for testing
 
 
+# ── Base ──────────────────────────────────────────────────────────────────────
+
 class CameraBase(BaseModel):
     """Fields shared between create and read schemas."""
     name:        str = Field(..., description="Human-readable label, e.g. 'Main Gate'")
@@ -44,6 +44,8 @@ class CameraBase(BaseModel):
     stream_url:  str = Field(..., description="RTSP URL or file path")
     camera_type: CameraType = Field(CameraType.MOCK, description="Source type")
 
+
+# ── Create ────────────────────────────────────────────────────────────────────
 
 class CameraCreate(CameraBase):
     """Body expected when a client POSTs a new camera."""

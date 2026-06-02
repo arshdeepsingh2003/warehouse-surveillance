@@ -28,6 +28,18 @@ Track lifecycle:
   LOST        → not matched for a few frames (still in memory)
   DELETED     → missing too long → removed
 
+Ghost-bounding-box prevention:
+  • Tracks whose predicted bbox drifts mostly outside the frame are
+    deleted immediately instead of lingering for MAX_MISSES frames.
+  • Missed tracks pressed against the frame edge are pruned immediately
+    (touches_edge check) — the bbox property clamps coordinates so
+    a drifted-out box appears stuck at the border.
+  • Velocity is damped (×0.7) on each miss to prevent runaway predictions.
+  • IoU scores for missed tracks are penalized (×0.85) to prevent a ghost
+    from latching onto a different person's detection.
+  • Confidence decays (×0.85) on each missed frame.
+  • MAX_MISSES = 3 — at 10 FPS this is 0.3 s of persistence.
+
 Output per track:
   TrackedPerson = {
     track_id:   int             unique stable ID (P-1001, P-1002, ...)
@@ -181,7 +193,31 @@ class _Track:
 
     def mark_missed(self) -> None:
         self.misses += 1
-        self.predict()  # move bbox forward by velocity
+        # Confidence decay — each miss reduces reliability
+        self.confidence *= 0.85
+        # Dampen velocity to prevent runaway predictions into ghost boxes
+        self.vx *= 0.7
+        self.vy *= 0.7
+        self.predict()  # move bbox forward by damped velocity
+
+    def touches_edge(self, frame_w: int, frame_h: int, margin: int = 3) -> bool:
+        """True if the clamped bbox is pressed against any frame edge."""
+        x1, y1, x2, y2 = self.bbox
+        return (x1 <= margin or x2 >= frame_w - margin or
+                y1 <= margin or y2 >= frame_h - margin)
+
+    def visible_ratio(self, frame_w: int, frame_h: int) -> float:
+        """Fraction of the bbox area that falls inside the visible frame."""
+        x1, y1, x2, y2 = self.bbox_unclamped
+        total_area = max((x2 - x1) * (y2 - y1), 1)
+        clipped_x1 = max(0, x1)
+        clipped_y1 = max(0, y1)
+        clipped_x2 = min(frame_w, x2)
+        clipped_y2 = min(frame_h, y2)
+        visible_w = max(0, clipped_x2 - clipped_x1)
+        visible_h = max(0, clipped_y2 - clipped_y1)
+        visible_area = visible_w * visible_h
+        return visible_area / total_area
 
     @property
     def dwell_time(self) -> float:
@@ -194,6 +230,18 @@ class _Track:
         return (
             max(0, int(self.cx - half_w)),
             max(0, int(self.cy - half_h)),
+            int(self.cx + half_w),
+            int(self.cy + half_h),
+        )
+
+    @property
+    def bbox_unclamped(self) -> tuple[int, int, int, int]:
+        """Bbox without clamping — used for out-of-frame checks."""
+        half_w = self.w / 2
+        half_h = self.h / 2
+        return (
+            int(self.cx - half_w),
+            int(self.cy - half_h),
             int(self.cx + half_w),
             int(self.cy + half_h),
         )
@@ -233,7 +281,12 @@ def _hungarian_match(
     iou_matrix = np.zeros((len(tracks), len(detections)), dtype=np.float32)
     for ti, track in enumerate(tracks):
         for di, det in enumerate(detections):
-            iou_matrix[ti, di] = _iou(track.bbox, det.bbox)
+            iou = _iou(track.bbox, det.bbox)
+            # Penalize missed tracks — harder to re-associate, prevents
+            # a ghost at the frame edge from latching onto a valid detection.
+            if track.misses > 0:
+                iou *= 0.85
+            iou_matrix[ti, di] = iou
 
     # Greedy: sort all pairs by IoU descending, assign each to at most one partner
     pairs = sorted(
@@ -278,9 +331,13 @@ class PersonTracker:
     """
 
     # Tunable constants
-    IOU_THRESHOLD  = 0.25   # minimum IoU to match detection to track
-    MAX_MISSES     = 10     # frames without detection before deleting track
-    MIN_HITS       = 3      # detections before track is published
+    IOU_THRESHOLD            = 0.35   # minimum IoU to match detection to track
+    MAX_MISSES               = 3      # frames without detection before deleting track
+    MIN_HITS                 = 3      # detections before track is published
+    FRAME_VISIBILITY_THRESHOLD = 0.35 # minimum fraction of bbox that must be
+                                      # visible inside the frame — below this
+                                      # the track is deleted immediately
+    EDGE_MARGIN              = 3      # pixels from frame edge to consider "touching edge"
 
     def __init__(self, camera_id: str) -> None:
         self.camera_id = camera_id
@@ -298,50 +355,63 @@ class PersonTracker:
 
         Steps:
           1. Predict next positions for all existing tracks
-          2. Match detections to tracks via IoU
-          3. Update matched tracks
-          4. Create new tracks for unmatched detections
-          5. Delete tracks missing too long
-          6. Return confirmed tracks as TrackedPerson objects
+          2. Prune tracks whose bbox has drifted mostly out of frame
+          3. Match detections to tracks via IoU
+          4. Update matched tracks
+          5. Create new tracks for unmatched detections
+          6. Delete tracks missing too long
+          7. Return confirmed tracks as TrackedPerson objects
 
         Args:
             detections: Output of PersonDetector.detect()
-            frame:      Current BGR frame (used for zone lookup)
+            frame:      Current BGR frame (used for zone lookup + boundary check)
 
         Returns:
             List of confirmed TrackedPerson objects (published to rules engine)
         """
         self._frame_n += 1
+        frame_h, frame_w = frame.shape[:2]
 
         # ── 1. Predict ────────────────────────────────────────────────────────
         for track in self._tracks:
             track.predict()
 
-        # ── 2. Match ──────────────────────────────────────────────────────────
+        # ── 2. Prune out-of-frame and edge-ghost tracks ────────────────────
+        # If a predicted bbox has drifted mostly outside the visible frame,
+        # delete it immediately instead of letting it ghost for MAX_MISSES frames.
+        # Also prune missed tracks pressed against the frame edge — the bbox
+        # property clamps coordinates so a drifted-out box appears stuck at edge.
+        self._tracks = [
+            t for t in self._tracks
+            if t.visible_ratio(frame_w, frame_h) >= self.FRAME_VISIBILITY_THRESHOLD
+            and not (t.misses > 0 and t.touches_edge(frame_w, frame_h, self.EDGE_MARGIN))
+        ]
+
+        # ── 3. Match ──────────────────────────────────────────────────────────
         matches, unmatched_t, unmatched_d = _hungarian_match(
             self._tracks, detections, self.IOU_THRESHOLD
         )
 
-        # ── 3. Update matched tracks ──────────────────────────────────────────
+        # ── 4. Update matched tracks ──────────────────────────────────────────
         for ti, di in matches:
             det  = detections[di]
             zone = self._get_zone(det)
             self._tracks[ti].update(det, zone)
 
-        # ── 4. Mark unmatched tracks as missed ────────────────────────────────
+        # ── 5. Mark unmatched tracks as missed ────────────────────────────────
         for ti in unmatched_t:
             self._tracks[ti].mark_missed()
 
-        # ── 5. Create new tracks for unmatched detections ─────────────────────
+        # ── 6. Create new tracks for unmatched detections ─────────────────────
         for di in unmatched_d:
             det  = detections[di]
             zone = self._get_zone(det)
             self._tracks.append(_Track(det, zone))
 
-        # ── 6. Delete lost tracks ─────────────────────────────────────────────
+        # ── 7. Delete tracks missing too long ─────────────────────────────────
         self._tracks = [t for t in self._tracks if t.misses < self.MAX_MISSES]
 
-        # ── 7. Build output ───────────────────────────────────────────────────
+        # ── 8. Build output ───────────────────────────────────────────────────
         result = []
         for t in self._tracks:
             if not t.confirmed:

@@ -37,14 +37,10 @@ async def list_activities(
     anomaly_only: bool          = Query(False, description="Return only anomalous activities"),
     limit:        int           = Query(100, ge=1, le=1000),
 ) -> list[ActivityOut]:
-    print("=== ROUTE: list_activities called ===")
-    print(f"Params: camera_id={repr(camera_id)}, zone={repr(zone)}, person_id={repr(person_id)}, anomaly_only={repr(anomaly_only)}, limit={limit}")
-    result = await activity_service.get_all_activities(
+    return await activity_service.get_all_activities(
         camera_id=camera_id, zone=zone, person_id=person_id,
         anomaly_only=anomaly_only, limit=limit,
     )
-    print(f"Returning {len(result)} results")
-    return result
 
 
 @router.get(

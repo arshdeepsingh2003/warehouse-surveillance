@@ -1,26 +1,20 @@
 """
+schemas/alert.py
+────────────────
 Pydantic schemas for the Alert resource.
 
 Alerts are created by the AI anomaly classifier and consumed by
 the dashboard's Alert Panel. They can be acknowledged or resolved
 by a security operator.
-
-This file defines the Alert system structure for your AI surveillance project.
-It tells FastAPI and Pydantic:
-
-what an alert looks like
-what data AI sends
-what dashboard receives
-how alerts are resolved
-what is sent through WebSockets in real time
-
-Think of it as the blueprint of the alert system
 """
 
 from datetime import datetime
 from enum import Enum
 from typing import Optional
 from pydantic import BaseModel, Field
+
+
+# ── Enums ─────────────────────────────────────────────────────────────────────
 
 class AlertSeverity(str, Enum):
     LOW    = "low"
@@ -47,7 +41,9 @@ class AlertType(str, Enum):
     THEFT_ATTEMPT         = "theft_attempt"
     UNKNOWN               = "unknown"
 
-#Contains the common alert fields.
+
+# ── Base ──────────────────────────────────────────────────────────────────────
+
 class AlertBase(BaseModel):
     camera_id:    str        = Field(..., description="Which camera triggered the alert")
     zone:         str        = Field(..., description="Zone where the anomaly occurred")
@@ -58,7 +54,7 @@ class AlertBase(BaseModel):
     snapshot_url: Optional[str] = Field(None, description="S3 / static URL of the frame snapshot")
 
 
-# Response
+# ── Response ──────────────────────────────────────────────────────────────────
 
 class AlertOut(AlertBase):
     """Full alert object returned by the API."""
@@ -72,13 +68,15 @@ class AlertOut(AlertBase):
     model_config = {"from_attributes": True}
 
 
-# Resolve action
+# ── Resolve action ────────────────────────────────────────────────────────────
+
 class AlertResolve(BaseModel):
     """Body expected when PATCH /alerts/{id}/resolve is called."""
     resolved_by: str = Field(..., description="Email of the operator resolving the alert")
 
 
-# WebSocket event
+# ── WebSocket event ───────────────────────────────────────────────────────────
+
 class AlertWSEvent(BaseModel):
     """
     Payload broadcast over WebSocket when a new alert fires.

@@ -5,24 +5,6 @@ Pydantic schemas for the Analytics API.
 
 These are aggregated/summarised views consumed by the dashboard
 Analytics page — charts, KPI cards, zone risk maps, etc.
-
-Your backend collects:
-
-camera data
-alerts
-activity logs
-anomaly detections
-
-This schema converts all of that into dashboard-friendly analytics.
-
-Example:
-
-Instead of showing 10,000 alert records individually, analytics shows:
-
-total alerts today
-risky zones
-alert trends
-peak activity hour
 """
 
 from pydantic import BaseModel, Field

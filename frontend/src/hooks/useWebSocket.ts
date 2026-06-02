@@ -7,14 +7,18 @@ import { WS_URL } from '../api/client'
 import { useAlertStore } from '../store/alertStore'
 import { useCameraStore } from '../store/cameraStore'
 import { useTrackingStore } from '../store/trackingStore'
+import { useIntelligenceStore } from '../store/intelligenceStore'
 import type { WSEvent } from '../types'
 
 export function useWebSocket() {
   const ws = useRef<WebSocket | null>(null)
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const addLiveAlert   = useAlertStore(s => s.addLiveAlert)
+  const addLiveAlert    = useAlertStore(s => s.addLiveAlert)
   const updateCamStatus = useCameraStore(s => s.updateCameraStatus)
-  const updateTracking = useTrackingStore(s => s.updateTracking)
+  const updateTracking  = useTrackingStore(s => s.updateTracking)
+  const setZoneSummary  = useIntelligenceStore(s => s.setZoneSummary)
+  const setShiftReport  = useIntelligenceStore(s => s.setShiftReport)
+  const addExplanation  = useIntelligenceStore(s => s.addExplanation)
 
   const connect = useCallback(() => {
     if (ws.current?.readyState === WebSocket.OPEN) return
@@ -71,6 +75,27 @@ export function useWebSocket() {
             // keep-alive — no action needed
             break
 
+          case 'zone_summary':
+            if (data.payload) {
+              setZoneSummary(data.payload as any)
+            }
+            break
+
+          case 'shift_report':
+            if (data.payload) {
+              setShiftReport(data.payload as any)
+            }
+            break
+
+          case 'anomaly_explanation':
+          case 'alert_explanation':
+            if (data.payload) {
+              addExplanation(data.payload as any)
+            } else {
+              addExplanation(data as any)
+            }
+            break
+
           default:
             break
         }
@@ -87,7 +112,7 @@ export function useWebSocket() {
     ws.current.onerror = () => {
       ws.current?.close()
     }
-  }, [addLiveAlert, updateCamStatus, updateTracking])
+  }, [addLiveAlert, updateCamStatus, updateTracking, setZoneSummary, setShiftReport, addExplanation])
 
   useEffect(() => {
     connect()

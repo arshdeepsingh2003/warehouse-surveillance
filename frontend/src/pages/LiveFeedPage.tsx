@@ -1,5 +1,6 @@
 // pages/LiveFeedPage.tsx
 import { CameraGrid } from '../components/cameras/CameraGrid'
+import { ErrorBoundary } from '../components/common/ErrorBoundary'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { Wifi, WifiOff } from 'lucide-react'
@@ -36,7 +37,9 @@ export function LiveFeedPage() {
       </div>
 
       <div className="livefeed-grid-container">
-        <CameraGrid />
+        <ErrorBoundary>
+          <CameraGrid />
+        </ErrorBoundary>
       </div>
 
       <p className="livefeed-hint">

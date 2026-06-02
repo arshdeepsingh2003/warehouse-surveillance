@@ -127,9 +127,10 @@ class YOLODetector(BaseDetector):
     ):
         from ultralytics import YOLO   # import here so HOG still works without it
 
-        self.conf     = confidence_thresh
-        self.img_size = img_size
-        self.device   = device
+        self.conf       = confidence_thresh
+        self.iou_thresh = 0.45   # NMS threshold — stricter than YOLO default (0.7)
+        self.img_size   = img_size
+        self.device     = device
 
         logger.info(f"Loading YOLO model: {model_path} on {device}")
         self.model = YOLO(model_path)
@@ -143,6 +144,9 @@ class YOLODetector(BaseDetector):
         """
         Run YOLOv8 inference on a single BGR frame.
 
+        Applies YOLO's internal NMS + an explicit secondary NMS pass to
+        suppress overlapping detections that can cause ghost boxes.
+
         Args:
             frame: BGR numpy array (H × W × 3)
 
@@ -152,6 +156,7 @@ class YOLODetector(BaseDetector):
         results = self.model(
             frame,
             conf=    self.conf,
+            iou=     self.iou_thresh,
             classes= [self._person_class],   # only detect persons
             imgsz=   self.img_size,
             verbose= False,
@@ -171,7 +176,23 @@ class YOLODetector(BaseDetector):
                 class_name= "person",
             ))
 
+        # Secondary NMS — catch any overlapping boxes YOLO's internal NMS missed
+        if len(detections) > 1:
+            detections = self._nms(detections, iou_threshold=self.iou_thresh)
+
         return detections
+
+    @staticmethod
+    def _nms(detections: list[Detection], iou_threshold: float = 0.45) -> list[Detection]:
+        """Remove overlapping bounding boxes (Non-Max Suppression)."""
+        if not detections:
+            return []
+        detections.sort(key=lambda d: d.confidence, reverse=True)
+        kept = []
+        for det in detections:
+            if all(det.iou(k) < iou_threshold for k in kept):
+                kept.append(det)
+        return kept
 
 
 # ── Backend 2: HOG + SVM (OpenCV built-in) ───────────────────────────────────

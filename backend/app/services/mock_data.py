@@ -1,4 +1,6 @@
 """
+services/mock_data.py
+─────────────────────
 All mock / demo data lives here.
 
 When USE_MOCK_DATA=true (set in .env), every API route returns data from
@@ -20,10 +22,13 @@ UTC = ZoneInfo("UTC")
 def _now() -> datetime:
     return datetime.now(UTC)
 
-def _ago(minutes: int = 0, hours: int = 0) -> datetime: # Creates past timestamps
+def _ago(minutes: int = 0, hours: int = 0) -> datetime:
     return _now() - timedelta(minutes=minutes, hours=hours)
 
+
+# ─────────────────────────────────────────────────────────────────────────────
 # CAMERAS
+# ─────────────────────────────────────────────────────────────────────────────
 
 MOCK_CAMERAS = [
     {
@@ -107,7 +112,10 @@ MOCK_CAMERAS = [
 ]
 
 
+# ─────────────────────────────────────────────────────────────────────────────
 # ALERTS
+# ─────────────────────────────────────────────────────────────────────────────
+
 MOCK_ALERTS = [
     {
         "id": "alert-001",
@@ -187,7 +195,9 @@ MOCK_ALERTS = [
 ]
 
 
+# ─────────────────────────────────────────────────────────────────────────────
 # ACTIVITIES
+# ─────────────────────────────────────────────────────────────────────────────
 
 MOCK_ACTIVITIES = [
     {
@@ -276,7 +286,10 @@ MOCK_ACTIVITIES = [
     },
 ]
 
+
+# ─────────────────────────────────────────────────────────────────────────────
 # ANALYTICS
+# ─────────────────────────────────────────────────────────────────────────────
 
 MOCK_ANALYTICS = {
     "summary": {
@@ -312,4 +325,3 @@ MOCK_ANALYTICS = {
         {"zone": "Packing Area",    "incidents": 6,  "percentage": 10.0},
     ],
 }
-
