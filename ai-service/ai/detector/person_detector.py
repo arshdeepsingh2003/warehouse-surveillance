@@ -140,6 +140,47 @@ class YOLODetector(BaseDetector):
         self._person_class = 0
         logger.info("YOLODetector ready")
 
+    COCO_NAMES: dict[int, str] = {
+        0: "person", 1: "bicycle", 2: "car", 3: "motorcycle", 4: "airplane",
+        5: "bus", 6: "train", 7: "truck", 8: "boat", 9: "traffic light",
+        10: "fire hydrant", 11: "stop sign", 12: "parking meter", 13: "bench",
+        14: "bird", 15: "cat", 16: "dog", 17: "horse", 18: "sheep", 19: "cow",
+        20: "elephant", 21: "bear", 22: "zebra", 23: "giraffe", 24: "backpack",
+        25: "umbrella", 26: "handbag", 27: "tie", 28: "suitcase", 29: "frisbee",
+        30: "skis", 31: "snowboard", 32: "sports ball", 33: "kite",
+        34: "baseball bat", 35: "baseball glove", 36: "skateboard",
+        37: "surfboard", 38: "tennis racket", 39: "bottle", 40: "wine glass",
+        41: "cup", 42: "fork", 43: "knife", 44: "spoon", 45: "bowl",
+        46: "banana", 47: "apple", 48: "sandwich", 49: "orange", 50: "broccoli",
+        51: "carrot", 52: "hot dog", 53: "pizza", 54: "donut", 55: "cake",
+        56: "chair", 57: "couch", 58: "potted plant", 59: "bed",
+        60: "dining table", 61: "toilet", 62: "tv", 63: "laptop",
+        64: "mouse", 65: "remote", 66: "keyboard", 67: "cell phone",
+        68: "microwave", 69: "oven", 70: "toaster", 71: "sink",
+        72: "refrigerator", 73: "book", 74: "clock", 75: "vase",
+        76: "scissors", 77: "teddy bear", 78: "hair drier", 79: "toothbrush",
+    }
+
+    # Classes that could reasonably be carried by a person
+    CARRYABLE_CLASSES: set[int] = {
+        24,   # backpack
+        26,   # handbag
+        28,   # suitcase
+        39,   # bottle
+        40,   # wine glass
+        41,   # cup
+        63,   # laptop
+        64,   # mouse
+        65,   # remote
+        66,   # keyboard
+        67,   # cell phone
+        73,   # book
+        76,   # scissors
+        77,   # teddy bear
+        78,   # hair drier
+        79,   # toothbrush
+    }
+
     def detect(self, frame: np.ndarray) -> list[Detection]:
         """
         Run YOLOv8 inference on a single BGR frame.
@@ -181,6 +222,60 @@ class YOLODetector(BaseDetector):
             detections = self._nms(detections, iou_threshold=self.iou_thresh)
 
         return detections
+
+    def detect_with_classes(
+        self,
+        frame: np.ndarray,
+        class_ids: Optional[set[int]] = None,
+    ) -> list[Detection]:
+        """
+        Run YOLOv8 inference detecting specified COCO classes.
+
+        Args:
+            frame: BGR numpy array (H × W × 3)
+            class_ids: Set of COCO class IDs to detect. If None, detects all classes.
+
+        Returns:
+            List of Detection objects for the requested classes.
+        """
+        class_list = list(class_ids) if class_ids is not None else None
+
+        results = self.model(
+            frame,
+            conf=    self.conf,
+            iou=     self.iou_thresh,
+            classes= class_list,
+            imgsz=   self.img_size,
+            verbose= False,
+        )[0]
+
+        detections = []
+        if results.boxes is None:
+            return detections
+
+        for box in results.boxes:
+            x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+            conf = float(box.conf[0])
+            cls_id = int(box.cls[0])
+            detections.append(Detection(
+                bbox=       (x1, y1, x2, y2),
+                confidence= conf,
+                class_id=   cls_id,
+                class_name= self.COCO_NAMES.get(cls_id, f"class_{cls_id}"),
+            ))
+
+        if len(detections) > 1:
+            detections = self._nms(detections, iou_threshold=self.iou_thresh)
+
+        return detections
+
+    def detect_carryable_objects(self, frame: np.ndarray) -> list[Detection]:
+        """
+        Convenience method: detect objects that could be carried by a person.
+
+        Returns list of Detection for CARRYABLE_CLASSES.
+        """
+        return self.detect_with_classes(frame, class_ids=self.CARRYABLE_CLASSES)
 
     @staticmethod
     def _nms(detections: list[Detection], iou_threshold: float = 0.45) -> list[Detection]:
@@ -357,11 +452,35 @@ class PersonDetector:
         return HOGDetector(conf)
 
     def detect(self, frame: np.ndarray) -> list[Detection]:
-        """Run detection. Returns empty list on error (never raises)."""
+        """Run person detection. Returns empty list on error (never raises)."""
         try:
             return self._backend.detect(frame)
         except Exception as e:
             logger.error(f"Detection error: {e}")
+            return []
+
+    def detect_with_classes(
+        self,
+        frame: np.ndarray,
+        class_ids: Optional[set[int]] = None,
+    ) -> list[Detection]:
+        """Run detection for specified COCO classes. Returns empty list on error."""
+        if not hasattr(self._backend, "detect_with_classes"):
+            return []
+        try:
+            return self._backend.detect_with_classes(frame, class_ids)
+        except Exception as e:
+            logger.error(f"Multi-class detection error: {e}")
+            return []
+
+    def detect_carryable_objects(self, frame: np.ndarray) -> list[Detection]:
+        """Detect objects that could be carried by a person. Returns empty list on error."""
+        if not hasattr(self._backend, "detect_carryable_objects"):
+            return []
+        try:
+            return self._backend.detect_carryable_objects(frame)
+        except Exception as e:
+            logger.error(f"Carryable object detection error: {e}")
             return []
 
     @property

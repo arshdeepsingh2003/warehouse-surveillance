@@ -43,6 +43,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
+from ai.detector.person_detector import Detection
 from ai.tracker.person_tracker import TrackedPerson
 from config.settings import settings
 
@@ -140,6 +141,21 @@ class _PersonHistory:
         return self.current_ar > self.baseline_ar * 2.0
 
 
+# ── IoU utility ───────────────────────────────────────────────────────────────
+
+def _iou(bbox1: tuple, bbox2: tuple) -> float:
+    """Intersection over Union for two bounding boxes (x1,y1,x2,y2)."""
+    x1a, y1a, x2a, y2a = bbox1
+    x1b, y1b, x2b, y2b = bbox2
+    ix1 = max(x1a, x1b); iy1 = max(y1a, y1b)
+    ix2 = min(x2a, x2b); iy2 = min(y2a, y2b)
+    inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+    a1 = (x2a - x1a) * (y2a - y1a)
+    a2 = (x2b - x1b) * (y2b - y1b)
+    union = a1 + a2 - inter
+    return inter / union if union > 0 else 0.0
+
+
 # ── Analyzer ──────────────────────────────────────────────────────────────────
 
 class ActivityAnalyzer:
@@ -161,16 +177,25 @@ class ActivityAnalyzer:
     # Aspect ratio (width/height) thresholds
     AR_FALL_THRESHOLD  = 1.8    # w/h > 1.8 → person is horizontal
 
+    # IoU threshold for carryable-object-to-person association
+    CARRY_IOU_THRESHOLD  = 0.05   # minimal overlap = person is holding/carrying
+    CARRY_DIST_THRESHOLD = 60.0   # pixels — object center near person bbox center
+
     def __init__(self, camera_id: str) -> None:
         self.camera_id = camera_id
         self._history: dict[int, _PersonHistory] = {}
 
-    def analyze(self, persons: list[TrackedPerson]) -> list[ActivityResult]:
+    def analyze(
+        self,
+        persons: list[TrackedPerson],
+        carryable_objects: Optional[list[Detection]] = None,
+    ) -> list[ActivityResult]:
         """
         Classify activity for all tracked persons in one frame.
 
         Args:
             persons: Output of PersonTracker.update()
+            carryable_objects: Detected carryable objects (boxes, bags, etc.)
 
         Returns:
             List of ActivityResult, one per person.
@@ -182,12 +207,71 @@ class ActivityAnalyzer:
         self._history = {k: v for k, v in self._history.items() if k in active_ids}
 
         for person in persons:
-            result = self._classify(person)
+            result = self._classify(person, carryable_objects)
             results.append(result)
 
         return results
 
-    def _classify(self, person: TrackedPerson) -> ActivityResult:
+    def _carrying_object(
+        self,
+        person: TrackedPerson,
+        objects: list[Detection],
+    ) -> Optional[float]:
+        """
+        Check if a person is carrying/holding an object using spatial overlap.
+
+        Returns confidence score (0.0–1.0) or None if no carryable object found.
+        """
+        px1, py1, px2, py2 = person.bbox
+        pw = max(px2 - px1, 1)
+        ph = max(py2 - py1, 1)
+
+        best_conf = None
+        for obj in objects:
+            ox1, oy1, ox2, oy2 = obj.bbox
+
+            # Condition 1: Partial bounding box overlap
+            ix1 = max(px1, ox1); iy1 = max(py1, oy1)
+            ix2 = min(px2, ox2); iy2 = min(py2, oy2)
+            inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+            person_area = pw * ph
+            obj_area = max(ox2 - ox1, 1) * max(oy2 - oy1, 1)
+            union = person_area + obj_area - inter
+            iou = inter / union if union > 0 else 0.0
+
+            if iou > self.CARRY_IOU_THRESHOLD:
+                score = min(1.0, 0.6 + iou * 2.0)
+                if best_conf is None or score > best_conf:
+                    best_conf = score
+                continue
+
+            # Condition 2: Object center lies within person bbox
+            ocx = (ox1 + ox2) / 2
+            ocy = (oy1 + oy2) / 2
+            if px1 <= ocx <= px2 and py1 <= ocy <= py2:
+                score = 0.65
+                if best_conf is None or score > best_conf:
+                    best_conf = score
+                continue
+
+            # Condition 3: Object center close to person center
+            pcx = (px1 + px2) / 2
+            pcy = (py1 + py2) / 2
+            dist = math.sqrt((ocx - pcx) ** 2 + (ocy - pcy) ** 2)
+            max_dim = max(pw, ph)
+            if max_dim > 0 and dist < min(self.CARRY_DIST_THRESHOLD, max_dim * 1.2):
+                proximity = 1.0 - (dist / max_dim)
+                score = max(0.50, min(0.75, proximity))
+                if best_conf is None or score > best_conf:
+                    best_conf = score
+
+        return best_conf
+
+    def _classify(
+        self,
+        person: TrackedPerson,
+        carryable_objects: Optional[list[Detection]] = None,
+    ) -> ActivityResult:
         """Classify one person's activity."""
         tid = person.track_id
 
@@ -282,7 +366,32 @@ class ActivityAnalyzer:
                 dwell_time=   person.dwell_time,
             )
 
-        # ── Rule 5: Normal activities (no anomaly) ────────────────────────────
+        # ── Rule 5: Carrying object (spatial relationship with detected objects)
+        carry_conf = None
+        if carryable_objects:
+            carry_conf = self._carrying_object(person, carryable_objects)
+        if carry_conf is not None:
+            objects_nearby = sum(
+                1 for o in carryable_objects
+                if _iou(person.bbox, o.bbox) > 0
+            )
+            return ActivityResult(
+                person_id=    person.person_id,
+                track_id=     tid,
+                activity_type=ActivityLabel.CARRYING_OBJECT,
+                anomaly_label="normal",
+                description=  (
+                    f"{person.person_id} is carrying {objects_nearby} object(s) "
+                    f"in '{person.zone_name}'."
+                ),
+                confidence=   min(0.88, carry_conf),
+                flags=        [],
+                zone_id=      person.zone_id,
+                zone_name=    person.zone_name,
+                dwell_time=   person.dwell_time,
+            )
+
+        # ── Rule 6: Normal activities (no anomaly) ────────────────────────────
         if speed < self.SPEED_STANDING_MAX:
             activity = ActivityLabel.STANDING
             desc = (f"{person.person_id} is standing in '{person.zone_name}'.")

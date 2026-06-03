@@ -43,7 +43,8 @@ import numpy as np
 
 from ai.detector.person_detector import PersonDetector
 from ai.tracker.person_tracker import PersonTracker, TrackedPerson
-from ai.analyzer.activity_analyzer import ActivityAnalyzer, ActivityResult
+from ai.analyzer.activity_analyzer import ActivityResult
+from ai.analyzer.recognizer import ActivityRecognizer
 from ai.rules.rules_engine import RulesEngine, AlertEvent
 from ai.overlay.frame_overlay import FrameOverlay
 from ai.vlm.vlm_client import VLMClient, VLMResult
@@ -63,7 +64,7 @@ class _CameraPipelineVLM:
         self.camera_id            = camera_id
         self.detector             = detector
         self.tracker              = PersonTracker(camera_id)
-        self.analyzer             = ActivityAnalyzer(camera_id)
+        self.recognizer           = ActivityRecognizer(camera_id)
         self.rules                = RulesEngine(camera_id)
         self.overlay              = FrameOverlay(camera_id)
         self.frame_skip_counter   = 0
@@ -154,6 +155,11 @@ class VLMFrameProcessor:
             persons    = pipe.tracker.update(detections, frame)
             pipe._last_persons = persons
 
+        # Detect carryable objects on every AI frame (used by activity analysis)
+        carryable: list = []
+        if run_cv:
+            carryable = self._detector.detect_carryable_objects(frame)
+
         # ── Step 2: VLM analysis (much less frequent) ─────────────────────────
         if run_vlm and persons and settings.USE_VLM:
             vlm_tasks = [
@@ -169,7 +175,7 @@ class VLMFrameProcessor:
 
         # ── Step 3: Activity analysis (CV rules + optional VLM merge) ─────────
         if run_cv:
-            activities = pipe.analyzer.analyze(persons)
+            activities = await pipe.recognizer.analyze(frame, persons, cam_id, carryable)
 
             # Merge VLM descriptions into rule-based results
             for act in activities:

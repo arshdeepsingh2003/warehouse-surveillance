@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     BATCH_SIZE:        int   = 30
     LOITERING_SECONDS: float = 10.0
 
+    # ── Activity Recognition ──────────────────────────────────────────────────
+    ACTIVITY_BACKEND: str = "rules"  # "rules" | "groq" | "hybrid" | "mock"
+
     # ── LLM / Summaries ────────────────────────────────────────────────────────
     SUMMARY_INTERVAL_SECONDS: int = 30
     LLM_BACKEND:              str = "mock"

@@ -40,7 +40,8 @@ import numpy as np
 
 from ai.detector.person_detector import PersonDetector
 from ai.tracker.person_tracker import PersonTracker, TrackedPerson
-from ai.analyzer.activity_analyzer import ActivityAnalyzer, ActivityResult
+from ai.analyzer.activity_analyzer import ActivityResult
+from ai.analyzer.recognizer import ActivityRecognizer
 from ai.rules.rules_engine import RulesEngine, AlertEvent
 from ai.overlay.frame_overlay import FrameOverlay
 from pipeline.api_client import APIClient
@@ -59,7 +60,7 @@ class _CameraPipeline:
         self.camera_id  = camera_id
         self.detector   = detector              # shared across cameras (thread-safe for inference)
         self.tracker    = PersonTracker(camera_id)
-        self.analyzer   = ActivityAnalyzer(camera_id)
+        self.recognizer = ActivityRecognizer(camera_id)
         self.rules      = RulesEngine(camera_id)
         self.overlay    = FrameOverlay(camera_id)
         self.frame_skip_counter = 0
@@ -146,8 +147,11 @@ class AIFrameProcessor:
             # Step 2: Track persons across frames
             persons = pipe.tracker.update(detections, frame)
 
-            # Step 3: Classify activities
-            activities = pipe.analyzer.analyze(persons)
+            # Step 3: Detect carryable objects (for spatial activity analysis)
+            carryable = self._detector.detect_carryable_objects(frame)
+
+            # Step 4: Classify activities (via pluggable recognizer)
+            activities = await pipe.recognizer.analyze(frame, persons, cam_id, carryable)
 
             # Step 4: Evaluate rules → alerts
             alerts = pipe.rules.evaluate(activities)
@@ -341,7 +345,11 @@ class VLMAIFrameProcessor(AIFrameProcessor):
         if run_ai:
             detections = self._detector.detect(frame)
             persons    = pipe.tracker.update(detections, frame)
-            activities = pipe.analyzer.analyze(persons)
+
+            # Detect carryable objects (for spatial activity analysis)
+            carryable = self._detector.detect_carryable_objects(frame)
+
+            activities = await pipe.recognizer.analyze(frame, persons, cam_id, carryable)
             alerts     = pipe.rules.evaluate(activities)
             pipe._last_persons    = persons
             pipe._last_activities = activities

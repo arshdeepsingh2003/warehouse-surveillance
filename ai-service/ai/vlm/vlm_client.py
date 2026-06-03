@@ -508,9 +508,9 @@ class VLMClient:
             f"ANOMALY: [normal or anomaly]\n"
             f"SEVERITY: [none, low, medium, or high]\n"
             f"DESCRIPTION: [one clear sentence describing what the person is doing "
-            f"and any safety or security concern]\n\n"
+            f"and any safety or security concern, noting any objects being carried]\n\n"
             f"Be concise and factual. Focus on observable behavior, posture, "
-            f"and any objects being handled."
+            f"and any objects being handled or carried."
         )
 
     def _parse_response(

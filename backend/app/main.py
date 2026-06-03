@@ -48,18 +48,23 @@ async def lifespan(app: FastAPI):
     logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
     logger.info(f"Mock data mode: {settings.USE_MOCK_DATA}")
 
-    # Start background task: fires mock WS events on a schedule
-    broadcaster_task = asyncio.create_task(mock_event_broadcaster())
-    logger.info("Mock WebSocket broadcaster started.")
+    # Start background task: fires mock WS events on a schedule (demo mode only)
+    if settings.USE_MOCK_DATA:
+        broadcaster_task = asyncio.create_task(mock_event_broadcaster())
+        logger.info("Mock WebSocket broadcaster started (demo mode).")
+    else:
+        broadcaster_task = None
+        logger.info("Mock WebSocket broadcaster disabled (production mode).")
 
     yield  # ← Application is running while we're here
 
     # Shutdown: cancel the background task cleanly
-    broadcaster_task.cancel()
-    try:
-        await broadcaster_task
-    except asyncio.CancelledError:
-        pass
+    if broadcaster_task:
+        broadcaster_task.cancel()
+        try:
+            await broadcaster_task
+        except asyncio.CancelledError:
+            pass
     logger.info("Application shutdown complete.")
 
 
