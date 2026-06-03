@@ -6,6 +6,8 @@
 import { create } from 'zustand'
 import type { WSFramePerson } from '../types'
 
+const EMPTY_PERSONS: WSFramePerson[] = []
+
 interface CameraTracking {
   persons:   WSFramePerson[]
   updatedAt: string
@@ -30,5 +32,5 @@ export const useTrackingStore = create<TrackingState>((set, get) => ({
     })),
 
   getPersonsForCamera: (cameraId) =>
-    get().cameraTracking[cameraId]?.persons ?? [],
+    get().cameraTracking[cameraId]?.persons ?? EMPTY_PERSONS,
 }))

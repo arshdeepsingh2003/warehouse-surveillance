@@ -68,23 +68,31 @@ def _random_alert_event() -> dict:
 
 
 def _random_frame_update() -> dict:
-    """Generate a fake frame update (person tracking data)."""
+    """Generate a fake frame update (person tracking data) with bounding boxes."""
     cameras = ["cam-01", "cam-02", "cam-03", "cam-04", "cam-05"]
     zones   = ["entry_zone", "storage_area", "restricted_area", "loading_zone", "packing_area"]
     activities = ["walking", "standing", "carrying_object", "handling_items"]
 
     cam = random.choice(cameras)
     n_persons = random.randint(1, 4)
+    frame_w, frame_h = 640, 360
 
-    persons = [
-        {
+    persons = []
+    for _ in range(n_persons):
+        bw = random.randint(40, 90)
+        bh = random.randint(100, 200)
+        cx = random.randint(bw, frame_w - bw)
+        cy = random.randint(bh, frame_h - bh)
+        x1, y1 = cx - bw // 2, cy - bh // 2
+        x2, y2 = x1 + bw, y1 + bh
+        persons.append({
             "person_id":     f"P-{random.randint(1000, 1099)}",
             "zone":          random.choice(zones),
             "activity":      random.choice(activities),
             "dwell_seconds": random.randint(5, 600),
-        }
-        for _ in range(n_persons)
-    ]
+            "bbox":          [x1, y1, x2, y2],
+            "center":        [cx, cy],
+        })
 
     return {
         "type":      "frame_update",
@@ -124,9 +132,13 @@ async def mock_event_broadcaster() -> None:
         await asyncio.sleep(5)
         tick += 5
 
-        # Frame update every 5 s
-        if manager.connection_count() > 0:
-            await manager.broadcast(_random_frame_update())
+        # NOTE: frame_update is NOT mocked here — the AI service (VLMAIFrameProcessor)
+        # sends real frame updates with proper bbox/center coordinates via
+        # POST /api/v1/events/broadcast. Broadcasting fake frame updates here would
+        # overwrite real tracking data in the frontend store.
+        # Enable mock frame updates only when AI service is not running:
+        #   if manager.connection_count() > 0:
+        #       await manager.broadcast(_random_frame_update())
 
         # Alert event every ~20 s
         if tick % 20 == 0 and manager.connection_count() > 0:

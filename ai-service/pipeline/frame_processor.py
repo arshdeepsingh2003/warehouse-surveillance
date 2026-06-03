@@ -251,12 +251,14 @@ class FrameProcessor:
             # Broadcast enriched frame update (includes bbox center)
             await self._api.broadcast_frame_update(
                 camera_id=cam_id,
-                person_id=person_id,
-                zone=zone,
-                activity=act_type,
-                dwell_secs=dwell_seconds,
-                bbox=[x1, y1, x2, y2],
-                center=[cx, cy],
+                persons=[{
+                    "person_id":     person_id,
+                    "zone":          zone,
+                    "activity":      act_type,
+                    "dwell_seconds": dwell_seconds,
+                    "bbox":          [x1, y1, x2, y2],
+                    "center":        [cx, cy],
+                }],
             )
         except Exception:
             # Don't let overlay failures break analysis

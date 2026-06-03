@@ -121,7 +121,7 @@ class YOLODetector(BaseDetector):
     def __init__(
         self,
         model_path:       str   = "models/yolov8n.pt",
-        confidence_thresh: float = 0.40,
+        confidence_thresh: float = 0.25,   # lowered from 0.40 — yolov8n needs lower threshold for recall
         device:           str   = "cpu",   # "cuda:0" for GPU
         img_size:         int   = 640,
     ):
@@ -327,7 +327,7 @@ class PersonDetector:
     def __init__(
         self,
         model_path:        str   = "models/yolov8n.pt",
-        confidence_thresh: float = 0.40,
+        confidence_thresh: float = 0.25,
         device:            str   = "cpu",
         force_backend:     Optional[str] = None,   # "yolo" | "hog" | "mock"
     ):

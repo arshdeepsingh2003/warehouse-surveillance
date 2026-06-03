@@ -39,7 +39,7 @@ export function BoundingBoxOverlay({ cameraId, persons, frameW = 640, frameH = 3
     <svg
       className="absolute inset-0 w-full h-full pointer-events-none"
       viewBox={`0 0 ${frameW} ${frameH}`}
-      preserveAspectRatio="none"
+      preserveAspectRatio="xMidYMid slice"
     >
       {persons.map((person) => {
         const isAlert = alertPersonIds.has(person.person_id)

@@ -62,7 +62,7 @@ class Settings(BaseSettings):
 
     # ── Detection / Processing ──────────────────────────────────────────────────
     YOLO_MODEL_PATH:        str = "./models/yolov8n.pt"
-    YOLO_CONFIDENCE:        float = 0.40
+    YOLO_CONFIDENCE:        float = 0.25
     DEVICE:                 str = "cpu"
     DETECTOR_BACKEND:       str = "auto"
     PROCESS_EVERY_N_FRAMES: int = 3

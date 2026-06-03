@@ -287,13 +287,18 @@ class VLMFrameProcessor:
                 )
 
         if persons:
-            await self._api.broadcast_frame_update(
-                camera_id=  cam_id,
-                person_id=  persons[0].person_id,
-                zone=       persons[0].zone_id,
-                activity=   activities[0].activity_type if activities else "unknown",
-                dwell_secs= int(persons[0].dwell_time),
-            )
+            person_list: list[dict] = []
+            for i, p in enumerate(persons):
+                act = activities[i].activity_type if i < len(activities) else "unknown"
+                person_list.append({
+                    "person_id":     p.person_id,
+                    "zone":          p.zone_id,
+                    "activity":      act,
+                    "dwell_seconds": int(p.dwell_time),
+                    "bbox":          list(p.bbox),
+                    "center":        list(p.center),
+                })
+            await self._api.broadcast_frame_update(camera_id=cam_id, persons=person_list)
 
     async def _post_anomaly_explanation(self, alert: AlertEvent, cam_id: str) -> None:
         """Generate and post an LLM explanation for a high-severity alert."""

@@ -333,7 +333,7 @@ class PersonTracker:
     # Tunable constants
     IOU_THRESHOLD            = 0.35   # minimum IoU to match detection to track
     MAX_MISSES               = 3      # frames without detection before deleting track
-    MIN_HITS                 = 3      # detections before track is published
+    MIN_HITS                 = 1      # publish immediately (was 3 — slowed initial appearance)
     FRAME_VISIBILITY_THRESHOLD = 0.35 # minimum fraction of bbox that must be
                                       # visible inside the frame — below this
                                       # the track is deleted immediately

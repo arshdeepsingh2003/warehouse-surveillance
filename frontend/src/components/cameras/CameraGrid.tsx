@@ -33,13 +33,23 @@ function CameraCard({ camera, onExpand, expanded }: CardProps) {
   const [imgErr, setImgErr]   = useState(false)
   const [loading, setLoading] = useState(true)
   const imgRef = useRef<HTMLDivElement>(null)
+  const [frameSize, setFrameSize] = useState({ w: 640, h: 360 })
   
   // Track rendered dimensions for SVG overlay scaling
   useEffect(() => {
     if (!imgRef.current) return
-    const ro = new ResizeObserver(_entries => {
-      
-      })
+    const ro = new ResizeObserver(entries => {
+      for (const entry of entries) {
+        const { width, height } = entry.contentRect
+        if (width > 0 && height > 0) {
+          const aspect = 16 / 9
+          let rw = width, rh = height
+          if (rh * aspect > rw) rh = rw / aspect
+          else rw = rh * aspect
+          setFrameSize({ w: Math.round(rw), h: Math.round(rh) })
+        }
+      }
+    })
     ro.observe(imgRef.current)
     return () => ro.disconnect()
   }, [])
@@ -80,7 +90,7 @@ function CameraCard({ camera, onExpand, expanded }: CardProps) {
 
             {/* SVG overlay layer (interactive) — draws boxes from WS events */}
             {!loading && (
-              <BoundingBoxOverlay cameraId={camera.id} persons={persons} />
+              <BoundingBoxOverlay cameraId={camera.id} persons={persons} frameW={frameSize.w} frameH={frameSize.h} />
             )}
 
             {/* Loading spinner */}

@@ -165,35 +165,20 @@ class APIClient:
     async def broadcast_frame_update(
         self,
         camera_id:  str,
-        person_id:  str,
-        zone:       str,
-        activity:   str,
-        dwell_secs: int,
-        bbox:       list[int] | None = None,
-        center:     list[int] | None = None,
+        persons:    list[dict],
     ) -> None:
         """
         POST a frame_update event so the backend WS hub broadcasts it.
 
-        The backend's /api/v1/events/broadcast endpoint accepts any
-        dict and broadcasts it directly to all WebSocket clients.
-        This gives the dashboard real-time person tracking updates.
+        Accepts a list of person dicts so all detected persons in a
+        single frame are sent in one broadcast. Each person dict should
+        contain at minimum: person_id, zone, activity, dwell_seconds,
+        and optionally bbox ([x1,y1,x2,y2]) and center ([cx,cy]).
         """
-        person_obj = {
-            "person_id":     person_id,
-            "zone":          zone,
-            "activity":      activity,
-            "dwell_seconds": dwell_secs,
-        }
-        if bbox is not None:
-            person_obj["bbox"] = bbox
-        if center is not None:
-            person_obj["center"] = center
-
         payload = {
             "type":      "frame_update",
             "camera_id": camera_id,
-            "persons": [person_obj],
+            "persons":   persons,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         await self._post("/api/v1/events/broadcast", payload)
