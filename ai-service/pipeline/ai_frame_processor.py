@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import os
 import time
 import uuid
 from collections import defaultdict
@@ -56,10 +57,11 @@ logger = logging.getLogger(__name__)
 class _CameraPipeline:
     """All per-camera AI components bundled together."""
 
-    def __init__(self, camera_id: str, detector: PersonDetector) -> None:
+    def __init__(self, camera_id: str, detector: PersonDetector,
+                 debug_dir: Optional[str] = None) -> None:
         self.camera_id  = camera_id
         self.detector   = detector              # shared across cameras (thread-safe for inference)
-        self.tracker    = PersonTracker(camera_id)
+        self.tracker    = PersonTracker(camera_id, debug_dir=debug_dir)
         self.recognizer = ActivityRecognizer(camera_id)
         self.rules      = RulesEngine(camera_id)
         self.overlay    = FrameOverlay(camera_id)
@@ -93,6 +95,10 @@ class AIFrameProcessor:
             device=            settings.DEVICE,
             force_backend=     None if settings.DETECTOR_BACKEND == "auto"
                                else settings.DETECTOR_BACKEND,
+            img_size=          settings.YOLO_IMG_SIZE,
+            use_tta=           settings.YOLO_USE_TTA,
+            use_clahe=         settings.YOLO_USE_CLAHE,
+            debug_dir=         settings.DEBUG_SAVE_DIR if settings.DEBUG_SAVE_IMAGES else None,
         )
         logger.info(f"Detector ready: {self._detector.backend_name}")
 
@@ -125,10 +131,14 @@ class AIFrameProcessor:
         """
         cam_id = frame_data.camera_id
         frame  = frame_data.frame.copy()
+        proc_ts = time.perf_counter()
 
         # ── Lazy pipeline init ────────────────────────────────────────────────
         if cam_id not in self._pipelines:
-            self._pipelines[cam_id] = _CameraPipeline(cam_id, self._detector)
+            self._pipelines[cam_id] = _CameraPipeline(
+                cam_id, self._detector,
+                debug_dir=settings.DEBUG_SAVE_DIR if settings.DEBUG_SAVE_IMAGES else None,
+            )
             logger.info(f"[{cam_id}] AI pipeline initialised")
 
         pipe = self._pipelines[cam_id]
@@ -138,44 +148,121 @@ class AIFrameProcessor:
         persons:    list[TrackedPerson] = pipe._last_persons
         activities: list[ActivityResult]= pipe._last_activities
         alerts:     list[AlertEvent]    = []
+        n_detections = 0
+        n_raw_detections = 0
 
         # ── Run AI (every N frames) ───────────────────────────────────────────
         if run_ai:
+            t_ai_start = time.perf_counter()
+
             # Step 1: Detect persons
-            detections = self._detector.detect(frame)
+            detections = self._detector.detect(frame, cam_id)
+            n_detections = len(detections)
+
+            # ── Detection-to-tracker association logging ──────────────────────
+            logger.debug(
+                f"[{cam_id}] Detector → Tracker: {n_detections} detections passed to tracker"
+            )
+            for idx, d in enumerate(detections):
+                logger.debug(
+                    f"[{cam_id}]   Det #{idx}: "
+                    f"box=({d.x1},{d.y1},{d.x2},{d.y2}) "
+                    f"conf={d.confidence:.4f} area={d.area}"
+                )
 
             # Step 2: Track persons across frames
             persons = pipe.tracker.update(detections, frame)
 
+            # ── Association summary ───────────────────────────────────────────
+            n_active = sum(1 for p in persons if not p.is_lost)
+            n_lost   = sum(1 for p in persons if p.is_lost)
+            logger.debug(
+                f"[{cam_id}] Tracker → downstream: {len(persons)} tracked "
+                f"(active={n_active}, lost={n_lost}) | "
+                f"ids=[{', '.join(p.person_id for p in persons)}]"
+            )
+
             # Step 3: Detect carryable objects (for spatial activity analysis)
-            carryable = self._detector.detect_carryable_objects(frame)
+            carryable = self._detector.detect_carryable_objects(frame, cam_id)
 
             # Step 4: Classify activities (via pluggable recognizer)
             activities = await pipe.recognizer.analyze(frame, persons, cam_id, carryable)
 
-            # Step 4: Evaluate rules → alerts
+            # Step 5: Evaluate rules → alerts
             alerts = pipe.rules.evaluate(activities)
 
             # Cache for skipped frames
             pipe._last_persons    = persons
             pipe._last_activities = activities
 
-        # ── Draw overlay (every frame) ────────────────────────────────────────
-        annotated = pipe.overlay.draw(frame, persons, activities, alerts)
+            t_ai_elapsed = time.perf_counter() - t_ai_start
 
-        # ── Encode JPEG for MJPEG stream ──────────────────────────────────────
-        jpeg = self._encode_jpeg(annotated)
-        self._latest_frames[cam_id] = jpeg
+            logger.info(
+                f"[{cam_id}] Frame {frame_data.frame_number:>6d} | AI | "
+                f"detections={n_detections} | "
+                f"active_tracks={n_active} | "
+                f"total_tracks={len(persons)} | "
+                f"alerts={len(alerts)} | "
+                f"ai_ms={t_ai_elapsed*1000:.1f}"
+            )
 
-        # ── Update stats ──────────────────────────────────────────────────────
-        self._cam_stats[cam_id] = {
-            "camera_id":    cam_id,
-            "frame_number": frame_data.frame_number,
-            "timestamp":    frame_data.timestamp,
-            "fps":          frame_data.source_fps,
-            "persons":      len(persons),
-            "alerts":       self._alert_counts[cam_id],
-        }
+            # ── Save debug images (stage-by-stage) ────────────────────────────
+            if settings.DEBUG_SAVE_IMAGES:
+                self._save_debug_frame(cam_id, frame_data.frame_number, "input", frame)
+                # Draw raw detections on a copy
+                raw_viz = frame.copy()
+                for d in detections:
+                    cv2.rectangle(raw_viz, (d.x1, d.y1), (d.x2, d.y2), (0, 255, 0), 2)
+                    cv2.putText(raw_viz, f"{d.confidence:.2f}", (d.x1, d.y1-5),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                self._save_debug_frame(cam_id, frame_data.frame_number, "detections", raw_viz)
+
+        else:
+            n_active = sum(1 for p in persons if not p.is_lost)
+            logger.debug(
+                f"[{cam_id}] Frame {frame_data.frame_number:>6d} | SKIP | "
+                f"cached_tracks={len(persons)} (active={n_active})"
+            )
+
+        # ── Draw overlay ──────────────────────────────────────────────────────
+        if run_ai:
+            frame_shape_before = frame.shape
+            n_persons_to_draw  = len([p for p in persons if not p.is_lost])
+
+            annotated = pipe.overlay.draw(frame, persons, activities, alerts)
+            has_annotations = n_persons_to_draw > 0 or len(alerts) > 0
+
+            if settings.DEBUG_SAVE_IMAGES:
+                self._save_debug_frame(cam_id, frame_data.frame_number, "annotated", annotated)
+
+            jpeg_data = self._encode_jpeg(annotated)
+            self._latest_frames[cam_id] = jpeg_data
+
+            if settings.DEBUG_SAVE_IMAGES:
+                tx_dir = os.path.join(settings.DEBUG_SAVE_DIR, cam_id, "transmitted_jpeg")
+                os.makedirs(tx_dir, exist_ok=True)
+                with open(os.path.join(tx_dir, f"frame_{frame_data.frame_number:06d}.jpg"), "wb") as f:
+                    f.write(jpeg_data)
+
+            logger.info(
+                f"[{cam_id}] TRANSMIT | "
+                f"frame={frame_data.frame_number} | "
+                f"detections={n_detections} | "
+                f"active_tracks={n_persons_to_draw} | "
+                f"alerts={len(alerts)} | "
+                f"frame_in={frame_shape_before[1]}x{frame_shape_before[0]} | "
+                f"annotated={'yes' if has_annotations else 'no'} | "
+                f"jpeg_encoded=yes | "
+                f"jpeg_bytes={len(jpeg_data)} | "
+                f"transmitted=yes"
+            )
+        else:
+            cached_jpeg = self._latest_frames.get(cam_id)
+            logger.info(
+                f"[{cam_id}] TRANSMIT | "
+                f"frame={frame_data.frame_number} | SKIP | "
+                f"jpeg_cached={'yes' if cached_jpeg is not None else 'NO'}"
+            )
 
         # ── Post to backend (fire-and-forget) ─────────────────────────────────
         if run_ai and (persons or alerts):
@@ -237,6 +324,12 @@ class AIFrameProcessor:
                     "bbox":          list(p.bbox),
                     "center":        list(p.center),
                 })
+            logger.info(
+                f"🔍 TRACE[pre-ws] camera={cam_id} | "
+                f"persons={len(person_list)} | "
+                f"ids=[{', '.join(p['person_id'] for p in person_list)}] | "
+                f"bboxes=[{'; '.join(str(p['bbox']) for p in person_list)}]"
+            )
             await self._api.broadcast_frame_update(camera_id=cam_id, persons=person_list)
 
     # ── MJPEG interface (same as mock processor) ──────────────────────────────
@@ -262,6 +355,21 @@ class AIFrameProcessor:
         small = cv2.resize(frame, (320, 180))
         jpeg  = self._encode_jpeg(small)
         return base64.b64encode(jpeg).decode("utf-8")
+
+    # ── Debug helpers ─────────────────────────────────────────────────────────
+
+    def _save_debug_frame(
+        self,
+        cam_id:  str,
+        frame_n: int,
+        stage:   str,
+        frame:   np.ndarray,
+    ) -> None:
+        """Save a frame to disk for per-camera stage-by-stage debug analysis."""
+        save_dir = os.path.join(settings.DEBUG_SAVE_DIR, cam_id, stage)
+        os.makedirs(save_dir, exist_ok=True)
+        path = os.path.join(save_dir, f"frame_{frame_n:06d}.jpg")
+        cv2.imwrite(path, frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -327,9 +435,30 @@ class VLMAIFrameProcessor(AIFrameProcessor):
         cam_id = frame_data.camera_id
         frame  = frame_data.frame.copy()
 
+        try:
+            await self._process_internal(frame_data, cam_id, frame)
+        except Exception as e:
+            logger.error(
+                f"[{cam_id}] Pipeline error: {e}",
+                exc_info=True,
+            )
+            if cam_id not in self._latest_frames:
+                jpeg = self._encode_jpeg(frame)
+                self._latest_frames[cam_id] = jpeg
+
+    async def _process_internal(
+        self,
+        frame_data: FrameData,
+        cam_id: str,
+        frame: np.ndarray,
+    ) -> None:
+        """Core processing logic with error isolation per camera."""
         # Lazy pipeline init
         if cam_id not in self._pipelines:
-            self._pipelines[cam_id] = _CameraPipeline(cam_id, self._detector)
+            self._pipelines[cam_id] = _CameraPipeline(
+                cam_id, self._detector,
+                debug_dir=settings.DEBUG_SAVE_DIR if settings.DEBUG_SAVE_IMAGES else None,
+            )
             logger.info(f"[{cam_id}] VLM pipeline initialised")
 
         pipe = self._pipelines[cam_id]
@@ -341,18 +470,72 @@ class VLMAIFrameProcessor(AIFrameProcessor):
         persons:    list[TrackedPerson] = pipe._last_persons
         activities: list[ActivityResult]= pipe._last_activities
         alerts:     list[AlertEvent]    = []
+        n_detections = 0
+        n_active = 0
 
         if run_ai:
-            detections = self._detector.detect(frame)
-            persons    = pipe.tracker.update(detections, frame)
+            try:
+                detections = self._detector.detect(frame, cam_id)
+                n_detections = len(detections)
 
-            # Detect carryable objects (for spatial activity analysis)
-            carryable = self._detector.detect_carryable_objects(frame)
+                logger.debug(
+                    f"[{cam_id}] Detector → Tracker: {n_detections} detections"
+                )
+                for idx, d in enumerate(detections):
+                    logger.debug(
+                        f"[{cam_id}]   Det #{idx}: "
+                        f"box=({d.x1},{d.y1},{d.x2},{d.y2}) "
+                        f"conf={d.confidence:.4f}"
+                    )
 
-            activities = await pipe.recognizer.analyze(frame, persons, cam_id, carryable)
-            alerts     = pipe.rules.evaluate(activities)
-            pipe._last_persons    = persons
-            pipe._last_activities = activities
+                persons    = pipe.tracker.update(detections, frame)
+
+                n_active = sum(1 for p in persons if not p.is_lost)
+                n_lost   = sum(1 for p in persons if p.is_lost)
+                logger.debug(
+                    f"[{cam_id}] Tracker → downstream: {len(persons)} tracked "
+                    f"(active={n_active}, lost={n_lost}) | "
+                    f"ids=[{', '.join(p.person_id for p in persons)}]"
+                )
+
+                carryable = self._detector.detect_carryable_objects(frame, cam_id)
+
+                activities = await pipe.recognizer.analyze(frame, persons, cam_id, carryable)
+                alerts     = pipe.rules.evaluate(activities)
+                pipe._last_persons    = persons
+                pipe._last_activities = activities
+
+                logger.info(
+                    f"[{cam_id}] Frame {frame_data.frame_number:>6d} | AI | "
+                    f"detections={n_detections} | "
+                    f"active_tracks={n_active} | "
+                    f"total_tracks={len(persons)} | "
+                    f"alerts={len(alerts)}"
+                )
+
+                if settings.DEBUG_SAVE_IMAGES:
+                    self._save_debug_frame(cam_id, frame_data.frame_number, "input", frame)
+                    raw_viz = frame.copy()
+                    for d in detections:
+                        cv2.rectangle(raw_viz, (d.x1, d.y1), (d.x2, d.y2), (0, 255, 0), 2)
+                        cv2.putText(raw_viz, f"{d.confidence:.2f}", (d.x1, d.y1-5),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                    self._save_debug_frame(cam_id, frame_data.frame_number, "detections", raw_viz)
+
+            except Exception as e:
+                logger.error(
+                    f"[{cam_id}] AI inference error: {e}",
+                    exc_info=True,
+                )
+                persons    = pipe._last_persons
+                activities = pipe._last_activities
+                alerts     = []
+        else:
+            n_active = sum(1 for p in persons if not p.is_lost)
+            logger.debug(
+                f"[{cam_id}] Frame {frame_data.frame_number:>6d} | SKIP | "
+                f"cached_tracks={len(persons)} (active={n_active})"
+            )
 
         # ── VLM enrichment (async, throttled, per confirmed person) ──────────
         if run_vlm and persons and settings.USE_VLM:
@@ -360,19 +543,78 @@ class VLMAIFrameProcessor(AIFrameProcessor):
                 self._run_vlm_batch(cam_id, frame.copy(), persons, activities)
             )
 
-        # Draw overlay + encode JPEG
-        annotated = pipe.overlay.draw(frame, persons, activities, alerts)
-        jpeg = self._encode_jpeg(annotated)
-        self._latest_frames[cam_id] = jpeg
+        # ── Overlay (AI frames only — skip frames reuse last annotated JPEG) ──
+        if run_ai:
+            frame_shape_before = frame.shape
+            n_persons_to_draw = len([p for p in persons if not p.is_lost])
+            n_alerts_drawn    = len(alerts)
 
+            try:
+                annotated = pipe.overlay.draw(frame, persons, activities, alerts)
+                has_annotations = True
+            except Exception as e:
+                logger.error(
+                    f"[{cam_id}] Overlay draw error: {e}",
+                    exc_info=True,
+                )
+                annotated = frame
+                has_annotations = False
+
+            frame_shape_after = annotated.shape
+            jpeg_size_before = len(self._latest_frames.get(cam_id, b""))
+            jpeg_data = self._encode_jpeg(annotated)
+            jpeg_size_after = len(jpeg_data)
+
+            self._latest_frames[cam_id] = jpeg_data
+
+            # ── Save transmitted JPEG for forensic comparison ──────────────────
+            if settings.DEBUG_SAVE_IMAGES:
+                tx_dir = os.path.join(settings.DEBUG_SAVE_DIR, cam_id, "transmitted_jpeg")
+                os.makedirs(tx_dir, exist_ok=True)
+                with open(os.path.join(tx_dir, f"frame_{frame_data.frame_number:06d}.jpg"), "wb") as f:
+                    f.write(jpeg_data)
+
+            # ── Transmission manifest log (single line, machine-parseable) ─────
+            logger.info(
+                f"[{cam_id}] TRANSMIT | "
+                f"frame={frame_data.frame_number} | "
+                f"detections={n_detections} | "
+                f"active_tracks={n_persons_to_draw} | "
+                f"alerts={n_alerts_drawn} | "
+                f"frame_in={frame_shape_before[1]}x{frame_shape_before[0]} | "
+                f"frame_out={frame_shape_after[1]}x{frame_shape_after[0]} | "
+                f"annotated={'yes' if has_annotations else 'FAIL'} | "
+                f"jpeg_encoded=yes | "
+                f"jpeg_bytes={jpeg_size_after} | "
+                f"prev_jpeg_bytes={jpeg_size_before} | "
+                f"transmitted=yes"
+            )
+        else:
+            # Skip frame — log that we're re-serving the last annotated JPEG
+            cached_jpeg = self._latest_frames.get(cam_id)
+            logger.info(
+                f"[{cam_id}] TRANSMIT | "
+                f"frame={frame_data.frame_number} | SKIP | "
+                f"jpeg_cached={'yes' if cached_jpeg is not None else 'NO'}"
+            )
+
+        ts_now = frame_data.timestamp or datetime.now(timezone.utc).isoformat()
         self._cam_stats[cam_id] = {
-            "camera_id":    cam_id,
-            "frame_number": frame_data.frame_number,
-            "timestamp":    frame_data.timestamp,
-            "fps":          frame_data.source_fps,
-            "persons":      len(persons),
-            "alerts":       self._alert_counts[cam_id],
+            "camera_id":      cam_id,
+            "frame_number":   frame_data.frame_number,
+            "timestamp":      ts_now,
+            "fps":            frame_data.source_fps,
+            "persons":        len(persons),
+            "alerts":         self._alert_counts[cam_id],
+            "detections":     n_detections,
+            "active_tracks":  n_active,
         }
+
+        logger.info(
+            f"🔍 TRACE[decision] camera={cam_id} run_ai={run_ai} "
+            f"has_persons={len(persons) > 0} has_alerts={len(alerts) > 0} "
+            f"will_post={(run_ai and (persons or alerts))}"
+        )
 
         if run_ai and (persons or alerts):
             asyncio.create_task(
@@ -541,6 +783,12 @@ class VLMAIFrameProcessor(AIFrameProcessor):
                     "bbox":          list(p.bbox),
                     "center":        list(p.center),
                 })
+            logger.info(
+                f"🔍 TRACE[pre-ws(vlm)] camera={cam_id} | "
+                f"persons={len(person_list)} | "
+                f"ids=[{', '.join(p['person_id'] for p in person_list)}] | "
+                f"bboxes=[{'; '.join(str(p['bbox']) for p in person_list)}]"
+            )
             await self._api.broadcast_frame_update(camera_id=cam_id, persons=person_list)
 
     async def _post_alert_explanation(

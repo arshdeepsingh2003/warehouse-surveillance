@@ -23,14 +23,19 @@ interface TrackingState {
 export const useTrackingStore = create<TrackingState>((set, get) => ({
   cameraTracking: {},
 
-  updateTracking: (cameraId, persons, timestamp) =>
-    set(state => ({
+  updateTracking: (cameraId, persons, timestamp) => {
+    console.log(`🔍 TRACE[store-update] camera=${cameraId} persons=${persons.length} ids=[${persons.map(p => p.person_id).join(', ')}] bboxes=[${persons.map(p => JSON.stringify(p.bbox)).join('; ')}]`)
+    return set(state => ({
       cameraTracking: {
         ...state.cameraTracking,
         [cameraId]: { persons, updatedAt: timestamp },
       },
-    })),
+    }))
+  },
 
-  getPersonsForCamera: (cameraId) =>
-    get().cameraTracking[cameraId]?.persons ?? EMPTY_PERSONS,
+  getPersonsForCamera: (cameraId) => {
+    const result = get().cameraTracking[cameraId]?.persons ?? EMPTY_PERSONS
+    console.log(`🔍 TRACE[store-get] camera=${cameraId} persons=${result.length} ids=[${result.map(p => p.person_id).join(', ')}]`)
+    return result
+  },
 }))

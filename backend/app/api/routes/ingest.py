@@ -18,10 +18,13 @@ Endpoints:
   PATCH /api/v1/cameras/{id}/status ← camera online/offline/fps updates from heartbeat
 """
 
+import logging
 from datetime import datetime, timezone
 from typing import Optional
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 from app.ws.connection_manager import manager as ws_manager
 from app.services.mock_data import MOCK_ACTIVITIES, MOCK_ALERTS, MOCK_CAMERAS
@@ -156,7 +159,19 @@ async def broadcast_event(data: BroadcastEvent):
     Used for frame_update, camera_status, and other real-time events.
     """
     payload = data.model_dump()
+    if payload.get("type") == "frame_update":
+        cam_id = payload.get("camera_id", "?")
+        persons = payload.get("persons", [])
+        logger.info(
+            f"🔍 TRACE[backend-ingest] RECEIVED frame_update camera={cam_id} | "
+            f"persons={len(persons)}"
+        )
     await ws_manager.broadcast(payload)
+    logger.info(
+        f"🔍 TRACE[backend-ws] BROADCAST type={payload.get('type')} "
+        f"camera={payload.get('camera_id', '?')} "
+        f"persons={len(payload.get('persons', [])) if payload.get('type') == 'frame_update' else 'N/A'}"
+    )
     return {"status": "broadcast_sent", "type": data.type}
 
 

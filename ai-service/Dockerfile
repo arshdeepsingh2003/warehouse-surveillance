@@ -11,8 +11,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Download YOLOv8n model at build time (cached in Docker layer)
-RUN python scripts/download_models.py || echo "Model download failed - will use HOG fallback"
+# Download YOLO models at build time (cached in Docker layer)
+# Primary: yolov8s (better accuracy); fallback: yolov8n
+RUN python scripts/download_models.py yolov8s.pt || echo "yolov8s download failed"
+RUN python scripts/download_models.py yolov8n.pt || echo "yolov8n download failed - will use HOG fallback"
 
 EXPOSE 8001
 CMD ["python", "main.py"]

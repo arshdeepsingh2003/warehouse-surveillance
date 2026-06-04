@@ -94,6 +94,16 @@ class ConnectionManager:
             message: Python dict — will be JSON-serialised automatically.
             room:    Target room. Defaults to "global" (all connected clients).
         """
+        import logging as _logging
+        _log = _logging.getLogger(__name__)
+        if message.get("type") == "frame_update":
+            _log.info(
+                f"🔍 TRACE[ws-broadcast] type=frame_update "
+                f"camera={message.get('camera_id', '?')} "
+                f"persons={len(message.get('persons', []))} "
+                f"room={room} clients={len(self._rooms.get(room, []))}"
+            )
+
         payload = json.dumps(message, default=str)   # default=str handles datetime objects
         targets = self._rooms.get(room, [])
         disconnected = []

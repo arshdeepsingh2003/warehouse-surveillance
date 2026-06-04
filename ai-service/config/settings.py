@@ -63,13 +63,22 @@ class Settings(BaseSettings):
     OLLAMA_LLM_MODEL: str = "llama3.2:3b"
     OLLAMA_MODEL:     str = "llava"
 
-    # ── Detection / Processing ──────────────────────────────────────────────────
-    YOLO_MODEL_PATH:        str = "./models/yolov8n.pt"
-    YOLO_CONFIDENCE:        float = 0.25
+    # ── YOLO Model ──────────────────────────────────────────────────────────────
+    YOLO_MODEL_PATH:   str = "./models/yolov8s.pt"
+    YOLO_CONFIDENCE:   float = 0.25
+    YOLO_IMG_SIZE:     int = 960
+    YOLO_USE_TTA:      bool = False
+    YOLO_USE_CLAHE:    bool = True
+
+    # ── Hardware / Processing ───────────────────────────────────────────────────
     DEVICE:                 str = "cpu"
     DETECTOR_BACKEND:       str = "auto"
-    PROCESS_EVERY_N_FRAMES: int = 3
+    PROCESS_EVERY_N_FRAMES: int = 2
     ALERT_COOLDOWN_SECONDS: float = 30.0
+
+    # ── Debug / Diagnostics ──────────────────────────────────────────────────────
+    DEBUG_SAVE_IMAGES: bool   = False
+    DEBUG_SAVE_DIR:    str    = "./debug_frames"
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -40,8 +40,10 @@ export function useWebSocket() {
         switch (data.type) {
           case 'frame_update':
             if (data.camera_id && data.persons) {
-              console.log(`[WS] frame_update for ${data.camera_id}: ${data.persons.length} persons`)
+              console.log(`🔍 TRACE[ws-receive] camera=${data.camera_id} persons=${data.persons.length} ids=[${data.persons.map((p: any) => p.person_id).join(', ')}] bboxes=[${data.persons.map((p: any) => JSON.stringify(p.bbox)).join('; ')}]`)
               updateTracking(data.camera_id, data.persons, data.timestamp)
+            } else {
+              console.log(`🔍 TRACE[ws-receive] INCOMPLETE frame_update camera=${data.camera_id} has_persons=${Boolean(data.persons)}`)
             }
             break
           case 'alert_triggered':

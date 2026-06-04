@@ -32,6 +32,7 @@ MODELS_DIR.mkdir(exist_ok=True)
 DOWNLOAD_URLS = {
     "yolov8n.pt": "https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8n.pt",
     "yolov8s.pt": "https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8s.pt",
+    "yolov8m.pt": "https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8m.pt",
 }
 
 

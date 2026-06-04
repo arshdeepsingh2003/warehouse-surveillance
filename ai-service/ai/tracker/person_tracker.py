@@ -59,6 +59,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
+import cv2
 import numpy as np
 
 from ai.detector.person_detector import Detection
@@ -70,6 +71,9 @@ logger = logging.getLogger(__name__)
 # ── Kalman filter constants ───────────────────────────────────────────────────
 # State: [cx, cy, w, h, vcx, vcy, vw, vh]  (center_x, center_y, width, height + velocities)
 _DT = 1.0  # one frame time step
+
+# Track confirmation threshold — how many matched detections before publishing
+MIN_HITS_TO_CONFIRM = 1
 
 # ── TrackedPerson dataclass ───────────────────────────────────────────────────
 
@@ -126,11 +130,9 @@ class TrackedPerson:
 class _Track:
     """Internal state for one tracked person (not exposed outside this module)."""
 
-    _next_id = 1
-
-    def __init__(self, detection: Detection, zone: Optional[Zone]) -> None:
-        self.track_id      = _Track._next_id
-        _Track._next_id   += 1
+    def __init__(self, detection: Detection, zone: Optional[Zone], next_id_source: list[int]) -> None:
+        self.track_id      = next_id_source[0]
+        next_id_source[0] += 1
 
         x1, y1, x2, y2    = detection.bbox
         self.cx            = float((x1 + x2) / 2)
@@ -179,7 +181,7 @@ class _Track:
         self.hits      += 1
         self.misses     = 0
 
-        if self.hits >= 3:
+        if self.hits >= MIN_HITS_TO_CONFIRM:
             self.confirmed = True
 
         # Update zone
@@ -195,10 +197,12 @@ class _Track:
         self.misses += 1
         # Confidence decay — each miss reduces reliability
         self.confidence *= 0.85
-        # Dampen velocity to prevent runaway predictions into ghost boxes
+        # Dampen velocity to prevent runaway predictions into ghost boxes.
+        # NOTE: predict() is NOT called here because the main update() loop
+        # already called it for ALL tracks at step 1. Calling it again would
+        # double-predict and accelerate ghost drift.
         self.vx *= 0.7
         self.vy *= 0.7
-        self.predict()  # move bbox forward by damped velocity
 
     def touches_edge(self, frame_w: int, frame_h: int, margin: int = 3) -> bool:
         """True if the clamped bbox is pressed against any frame edge."""
@@ -333,16 +337,19 @@ class PersonTracker:
     # Tunable constants
     IOU_THRESHOLD            = 0.35   # minimum IoU to match detection to track
     MAX_MISSES               = 3      # frames without detection before deleting track
-    MIN_HITS                 = 1      # publish immediately (was 3 — slowed initial appearance)
+    MIN_HITS                 = MIN_HITS_TO_CONFIRM  # publish immediately (was 3 — slowed initial appearance)
     FRAME_VISIBILITY_THRESHOLD = 0.35 # minimum fraction of bbox that must be
                                       # visible inside the frame — below this
                                       # the track is deleted immediately
     EDGE_MARGIN              = 3      # pixels from frame edge to consider "touching edge"
 
-    def __init__(self, camera_id: str) -> None:
+    def __init__(self, camera_id: str, debug_dir: Optional[str] = None) -> None:
         self.camera_id = camera_id
         self._tracks:  list[_Track] = []
         self._frame_n: int = 0
+        # Each tracker gets its own ID counter (was a class-level global before)
+        self._next_id: list[int] = [1]
+        self._debug_dir = debug_dir
         logger.info(f"[{camera_id}] PersonTracker initialised")
 
     def update(
@@ -372,6 +379,9 @@ class PersonTracker:
         self._frame_n += 1
         frame_h, frame_w = frame.shape[:2]
 
+        n_input_dets = len(detections)
+        n_pre_tracks = len(self._tracks)
+
         # ── 1. Predict ────────────────────────────────────────────────────────
         for track in self._tracks:
             track.predict()
@@ -381,16 +391,50 @@ class PersonTracker:
         # delete it immediately instead of letting it ghost for MAX_MISSES frames.
         # Also prune missed tracks pressed against the frame edge — the bbox
         # property clamps coordinates so a drifted-out box appears stuck at edge.
+        pre_prune = len(self._tracks)
         self._tracks = [
             t for t in self._tracks
             if t.visible_ratio(frame_w, frame_h) >= self.FRAME_VISIBILITY_THRESHOLD
             and not (t.misses > 0 and t.touches_edge(frame_w, frame_h, self.EDGE_MARGIN))
         ]
+        pruned = pre_prune - len(self._tracks)
+        if pruned > 0:
+            logger.debug(
+                f"[{self.camera_id}] Pruned {pruned} out-of-frame/ghost tracks"
+            )
 
         # ── 3. Match ──────────────────────────────────────────────────────────
         matches, unmatched_t, unmatched_d = _hungarian_match(
             self._tracks, detections, self.IOU_THRESHOLD
         )
+
+        # ── Per-detection association log ─────────────────────────────────────
+        logger.debug(
+            f"[{self.camera_id}] Association: "
+            f"{len(matches)} matches, {len(unmatched_t)} unmatched tracks, "
+            f"{len(unmatched_d)} unmatched detections "
+            f"(of {n_input_dets} input dets vs {n_pre_tracks} tracks)"
+        )
+        for ti, di in matches:
+            t = self._tracks[ti]
+            d = detections[di]
+            logger.debug(
+                f"[{self.camera_id}]   MATCH: track P-{t.track_id+1000} "
+                f"(misses={t.misses}) ↔ det #{di} "
+                f"box=({d.x1},{d.y1},{d.x2},{d.y2}) conf={d.confidence:.4f}"
+            )
+        for ti in unmatched_t:
+            t = self._tracks[ti]
+            logger.debug(
+                f"[{self.camera_id}]   UNMATCHED TRACK: P-{t.track_id+1000} "
+                f"(misses={t.misses}, conf={t.confidence:.4f})"
+            )
+        for di in unmatched_d:
+            d = detections[di]
+            logger.debug(
+                f"[{self.camera_id}]   NEW DETECTION: #{di} "
+                f"box=({d.x1},{d.y1},{d.x2},{d.y2}) conf={d.confidence:.4f}"
+            )
 
         # ── 4. Update matched tracks ──────────────────────────────────────────
         for ti, di in matches:
@@ -406,10 +450,34 @@ class PersonTracker:
         for di in unmatched_d:
             det  = detections[di]
             zone = self._get_zone(det)
-            self._tracks.append(_Track(det, zone))
+            self._tracks.append(_Track(det, zone, self._next_id))
+            logger.debug(
+                f"[{self.camera_id}] New track P-{self._next_id[0] + 999} "
+                f"(conf={det.confidence:.3f})"
+            )
 
         # ── 7. Delete tracks missing too long ─────────────────────────────────
+        n_before_delete = len(self._tracks)
         self._tracks = [t for t in self._tracks if t.misses < self.MAX_MISSES]
+        n_deleted = n_before_delete - len(self._tracks)
+
+        # ── Track lifecycle summary ────────────────────────────────────────────
+        n_new_tracks = len(unmatched_d)
+        n_matched = len(matches)
+        n_missed = len(unmatched_t)
+        n_confirmed = sum(1 for t in self._tracks if t.confirmed)
+        n_unconfirmed = sum(1 for t in self._tracks if not t.confirmed)
+        logger.info(
+            f"🔍 TRACK[assoc] camera={self.camera_id} "
+            f"dets_in={n_input_dets} "
+            f"matched={n_matched} "
+            f"new_tracks={n_new_tracks} "
+            f"missed={n_missed} "
+            f"deleted={n_deleted} "
+            f"total_tracks={len(self._tracks)} "
+            f"confirmed={n_confirmed} "
+            f"unconfirmed={n_unconfirmed}"
+        )
 
         # ── 8. Build output ───────────────────────────────────────────────────
         result = []
@@ -430,12 +498,54 @@ class PersonTracker:
                 velocity=     (t.vx, t.vy),
             ))
 
+        # ── Save debug image with tracked persons drawn ─────────────────────────
+        if self._debug_dir:
+            import os as _os
+            viz = frame.copy()
+            for p in result:
+                x1, y1, x2, y2 = p.bbox
+                color = (0, 255, 255) if p.is_lost else (0, 255, 0)
+                cv2.rectangle(viz, (x1, y1), (x2, y2), color, 2)
+                cv2.putText(viz, f"{p.person_id} (active)" if not p.is_lost else f"{p.person_id} (lost)",
+                            (x1, max(y1-5, 15)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+            # Also draw raw detections that came in
+            for i, d in enumerate(detections):
+                cv2.rectangle(viz, (d.x1, d.y1), (d.x2, d.y2), (0, 165, 255), 1)
+                cv2.putText(viz, f"det#{i}", (d.x1, max(d.y1-15, 15)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 165, 255), 1)
+            save_dir = _os.path.join(self._debug_dir, self.camera_id, "tracker_output")
+            _os.makedirs(save_dir, exist_ok=True)
+            cv2.imwrite(
+                _os.path.join(save_dir, f"frame_{self._frame_n:06d}.jpg"),
+                viz, [cv2.IMWRITE_JPEG_QUALITY, 85],
+            )
+
+        n_active = sum(1 for p in result if not p.is_lost)
+        n_lost   = sum(1 for p in result if p.is_lost)
+        confs    = [f"{p.confidence:.2f}" for p in result]
+
+        logger.info(
+            f"🔍 TRACE[tracker] camera={self.camera_id} | "
+            f"active_tracks={n_active} | total_tracks={len(result)} | "
+            f"ids=[{', '.join(p.person_id for p in result if not p.is_lost)}] | "
+            f"bboxes=[{'; '.join(str(list(p.bbox)) for p in result if not p.is_lost)}]"
+        )
+
+        logger.info(
+            f"[{self.camera_id}] Tracker frame={self._frame_n} | "
+            f"detections={n_input_dets} | "
+            f"tracks_in={n_pre_tracks} | "
+            f"tracks_out={len(result)} (active={n_active}, lost={n_lost}) | "
+            f"confidences=[{', '.join(confs)}]"
+        )
+
         return result
 
     def reset(self) -> None:
         """Clear all tracks (e.g. when stream reconnects)."""
         self._tracks.clear()
-        logger.info(f"[{self.camera_id}] Tracker reset")
+        self._next_id = [1]
+        logger.info(f"[{self.camera_id}] Tracker reset (ID counter reset)")
 
     def _get_zone(self, det: Detection) -> Optional[Zone]:
         """Find which zone this detection's feet fall in."""

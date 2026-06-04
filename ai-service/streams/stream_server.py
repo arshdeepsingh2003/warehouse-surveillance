@@ -30,6 +30,7 @@ Usage in React:
 
 import asyncio
 import logging
+import os
 from typing import AsyncGenerator, Optional
 
 from fastapi import FastAPI, Response
@@ -133,6 +134,8 @@ async def _frame_generator(camera_id: str) -> AsyncGenerator[bytes, None]:
 
     # Yield a placeholder JPEG if processor isn't ready yet
     empty_sent = False
+    prev_bytes = 0
+    frame_n    = 0
 
     while True:
         if not _processor:
@@ -145,12 +148,35 @@ async def _frame_generator(camera_id: str) -> AsyncGenerator[bytes, None]:
             # Camera not started yet — send a tiny placeholder once
             if not empty_sent:
                 placeholder = _make_placeholder_jpeg(camera_id)
+                logger.info(
+                    f"[{camera_id}] MJPEG | SENDING PLACEHOLDER | "
+                    f"bytes={len(placeholder)}"
+                )
                 yield BOUNDARY + HEADER + placeholder + TAIL
                 empty_sent = True
             await asyncio.sleep(0.2)
             continue
 
         empty_sent = False
+        frame_n += 1
+        cur_bytes = len(jpeg)
+        changed   = cur_bytes != prev_bytes
+
+        # Log first frame and any frame where the JPEG size changes
+        if frame_n <= 3 or changed:
+            logger.info(
+                f"[{camera_id}] MJPEG | YIELD frame #{frame_n} | "
+                f"bytes={cur_bytes} | changed={'yes' if changed else 'no'} | "
+                f"prev_bytes={prev_bytes}"
+            )
+            # Save the exact bytes being served (if debug enabled)
+            if settings.DEBUG_SAVE_IMAGES:
+                tx_dir = os.path.join(settings.DEBUG_SAVE_DIR, camera_id, "mjpeg_served")
+                os.makedirs(tx_dir, exist_ok=True)
+                with open(os.path.join(tx_dir, f"frame_{frame_n:06d}.jpg"), "wb") as f:
+                    f.write(jpeg)
+
+        prev_bytes = cur_bytes
         yield BOUNDARY + HEADER + jpeg + TAIL
 
         # Target frame rate: 10fps → sleep 100ms between yields

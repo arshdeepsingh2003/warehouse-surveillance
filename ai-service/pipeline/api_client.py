@@ -175,6 +175,11 @@ class APIClient:
         contain at minimum: person_id, zone, activity, dwell_seconds,
         and optionally bbox ([x1,y1,x2,y2]) and center ([cx,cy]).
         """
+        logger.info(
+            f"🔍 TRACE[api-client] SENDING frame_update camera={camera_id} | "
+            f"persons={len(persons)} | "
+            f"ids=[{', '.join(p['person_id'] for p in persons)}]"
+        )
         payload = {
             "type":      "frame_update",
             "camera_id": camera_id,

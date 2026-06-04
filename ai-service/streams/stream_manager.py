@@ -100,7 +100,8 @@ class StreamManager:
             max_workers=12,
             thread_name_prefix="cam-reader"
         )
-        # Each camera gets its own queue (bounded to 5 frames to avoid memory bloat)
+        # Each camera gets its own queue. Larger buffer reduces frame drops
+        # when AI processing is momentarily slower than the camera frame rate.
         self._queues:  Dict[str, asyncio.Queue] = {}
         self._frame_callback: Optional[Callable[[FrameData], Awaitable[None]]] = None
 
@@ -110,7 +111,9 @@ class StreamManager:
         """Register a camera source. Can be called before or after start_all()."""
         self._configs[config.camera_id] = config
         self._states[config.camera_id]  = CameraState(camera_id=config.camera_id)
-        self._queues[config.camera_id]  = asyncio.Queue(maxsize=5)
+        # Larger queue reduces frame drops when AI processing is slow.
+        # At 10 FPS, 60 frames = 6 seconds of buffer.
+        self._queues[config.camera_id]  = asyncio.Queue(maxsize=60)
         logger.info(f"Registered camera: {config.camera_id} ({config.source_type}) → {config.source}")
 
     def register_all_from_config(self) -> None:
@@ -283,13 +286,15 @@ class StreamManager:
                     fps_window_frames    = 0
                     fps_window_start     = time.monotonic()
 
-                # Drop oldest frame if queue is full (don't block on a full queue)
+                # Blocking put creates natural backpressure: when the AI pipeline
+                # can't keep up, the reader pauses instead of dropping frames.
+                # This ensures all cameras get fair processing regardless of
+                # round-robin position.
                 if queue.full():
-                    try:
-                        queue.get_nowait()
-                    except asyncio.QueueEmpty:
-                        pass
-
+                    logger.warning(
+                        f"[{cam_id}] Queue full ({queue.qsize()}/{queue.maxsize}) — "
+                        f"reader will wait for space"
+                    )
                 await queue.put(frame_data)
 
         except asyncio.CancelledError:

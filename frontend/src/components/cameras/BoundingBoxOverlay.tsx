@@ -17,14 +17,18 @@ import { useAlertStore } from '../../store/alertStore'
 const COLOR_NORMAL  = '#00e5ff'   // cyan
 const COLOR_ANOMALY = '#ff1744'   // red
 
+// Original AI frame dimensions — bbox coordinates are in this space
+const ORIGINAL_FRAME_W = 640
+const ORIGINAL_FRAME_H = 360
+
 interface Props {
   cameraId:   string
   persons:    WSFramePerson[]
-  frameW?:    number   // original frame width  (default 640)
-  frameH?:    number   // original frame height (default 360)
 }
 
-export function BoundingBoxOverlay({ cameraId, persons, frameW = 640, frameH = 360 }: Props) {
+export function BoundingBoxOverlay({ cameraId, persons }: Props) {
+  console.log(`🔍 TRACE[bbox] camera=${cameraId} persons=${persons?.length ?? 0} ids=[${(persons ?? []).map(p => p.person_id).join(', ')}] bboxes=[${(persons ?? []).map(p => JSON.stringify(p.bbox)).join('; ')}]`)
+
   const liveAlerts = useAlertStore(s => s.liveAlerts)
   const alertPersonIds = new Set(
     liveAlerts
@@ -33,12 +37,15 @@ export function BoundingBoxOverlay({ cameraId, persons, frameW = 640, frameH = 3
       .filter(Boolean)
   )
 
-  if (!persons || persons.length === 0) return null
+  if (!persons || persons.length === 0) {
+    console.log(`🔍 TRACE[bbox] SKIPPING camera=${cameraId} — no persons to render`)
+    return null
+  }
 
   return (
     <svg
       className="absolute inset-0 w-full h-full pointer-events-none"
-      viewBox={`0 0 ${frameW} ${frameH}`}
+      viewBox={`0 0 ${ORIGINAL_FRAME_W} ${ORIGINAL_FRAME_H}`}
       preserveAspectRatio="xMidYMid slice"
     >
       {persons.map((person) => {
