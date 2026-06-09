@@ -28,9 +28,30 @@ class Settings(BaseSettings):
     # ── Behaviour ─────────────────────────────────────────────────────────────
     USE_MOCK_SOURCES:  bool  = True
     LOOP_VIDEO:        bool  = True
-    ALERT_PROBABILITY: float = 0.05
+    ALERT_PROBABILITY: float = 0.0
     BATCH_SIZE:        int   = 30
     LOITERING_SECONDS: float = 10.0
+
+    # ── Activity Detection Thresholds ─────────────────────────────────────────
+    # Minimum speed (px/frame) to classify a person as "walking" vs "standing"
+    MOVEMENT_THRESHOLD: float = 1.5
+    # Aspect ratio (width/height) above which a posture is considered a fall
+    FALL_ASPECT_RATIO_THRESHOLD: float = 1.8
+    # Pixel radius — person's centroid must remain within this area for loitering
+    LOITERING_RADIUS: float = 30.0
+    # Alias for LOITERING_SECONDS kept for clarity in configuration
+    @property
+    def loitering_time_threshold(self) -> float:
+        return self.LOITERING_SECONDS
+    @property
+    def movement_threshold(self) -> float:
+        return self.MOVEMENT_THRESHOLD
+    @property
+    def fall_aspect_ratio_threshold(self) -> float:
+        return self.FALL_ASPECT_RATIO_THRESHOLD
+    @property
+    def loitering_radius(self) -> float:
+        return self.LOITERING_RADIUS
 
     # ── Activity Recognition ──────────────────────────────────────────────────
     ACTIVITY_BACKEND: str = "rules"  # "rules" | "groq" | "hybrid" | "mock"
@@ -63,6 +84,10 @@ class Settings(BaseSettings):
     OLLAMA_LLM_MODEL: str = "llama3.2:3b"
     OLLAMA_MODEL:     str = "llava"
 
+    # ── Qwen2.5-VL (via Ollama) ────────────────────────────────────────────────
+    OLLAMA_HOST:    str = "http://localhost:11434"
+    QWEN_VL_MODEL:  str = "qwen2.5-vl"
+
     # ── YOLO Model ──────────────────────────────────────────────────────────────
     YOLO_MODEL_PATH:   str = "./models/yolov8s.pt"
     YOLO_CONFIDENCE:   float = 0.25
@@ -75,6 +100,13 @@ class Settings(BaseSettings):
     DETECTOR_BACKEND:       str = "auto"
     PROCESS_EVERY_N_FRAMES: int = 2
     ALERT_COOLDOWN_SECONDS: float = 30.0
+
+    # ── Crop Management ──────────────────────────────────────────────────────────
+    CROP_DIR:                        str  = "./crops"
+    CROP_RETENTION_DAYS:             int  = 7
+    CROP_PADDING:                    int  = 20
+    CROP_QUALITY:                    int  = 85
+    CROP_CLEANUP_INTERVAL_SECONDS:   int  = 3600
 
     # ── Debug / Diagnostics ──────────────────────────────────────────────────────
     DEBUG_SAVE_IMAGES: bool   = False

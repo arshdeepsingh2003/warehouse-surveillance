@@ -5,23 +5,24 @@ WebSocket endpoint for real-time dashboard updates.
 
 The dashboard connects once and receives events as they happen:
   • alert_triggered  – a new anomaly was detected by the AI pipeline
+                      (via POST /api/v1/alerts/ingest from the AI service)
   • alert_resolved   – an operator resolved an alert
   • frame_update     – latest person tracking data per camera
+                      (via POST /api/v1/events/broadcast from the AI service)
   • camera_status    – a camera came online or went offline
+                      (via PATCH /api/v1/cameras/{id}/status from heartbeat)
   • ping             – keep-alive, sent every 30 s
 
-Architecture note:
-  In this mock version a background task fires fake events on a schedule.
-  In production the AI pipeline and alert engine will call
-  `await manager.broadcast(event)` directly when real events occur.
+All dashboard alerts originate exclusively from the real AI pipeline:
+  Detection → Tracking → ActivityAnalyzer → RulesEngine → API Client
+  → POST /api/v1/alerts/ingest → WebSocket Broadcast → Dashboard
 
 WebSocket URL: ws://localhost:8000/ws
 """
 
 import asyncio
-import random
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -34,122 +35,18 @@ logger = logging.getLogger(__name__)
 UTC = ZoneInfo("UTC")
 
 
-# ── Mock event generators ─────────────────────────────────────────────────────
+# ── Keep-alive broadcaster ────────────────────────────────────────────────────
 
-def _random_alert_event() -> dict:
-    """Generate a plausible fake alert event payload."""
-    alert_types = [
-        ("unauthorized_access",   "high",   "Unauthorized person detected entering restricted zone."),
-        ("ppe_violation",         "low",    "Worker detected without safety helmet in PPE zone."),
-        ("loitering",             "medium", "Individual loitering near loading dock for 15+ minutes."),
-        ("worker_fall",           "high",   "Worker fall detected. Person stationary for 30+ seconds."),
-        ("suspicious_activity",   "medium", "Suspicious behaviour detected near storage rack."),
-    ]
-    cameras = ["cam-01", "cam-02", "cam-03", "cam-04", "cam-05"]
-    zones   = ["entry_zone", "storage_area", "restricted_area", "loading_zone", "packing_area"]
-
-    alert_type, severity, description = random.choice(alert_types)
-    cam  = random.choice(cameras)
-    zone = random.choice(zones)
-
-    return {
-        "type":        "alert_triggered",
-        "alert_id":    f"alert-{random.randint(1000, 9999)}",
-        "camera_id":   cam,
-        "zone":        zone,
-        "alert_type":  alert_type,
-        "severity":    severity,
-        "description": description,
-        "person_id":   f"P-{random.randint(1000, 1099)}",
-        "confidence":  round(random.uniform(0.70, 0.99), 2),
-        "snapshot_url": f"https://placehold.co/640x360?text={alert_type.replace('_', '+')}",
-        "timestamp":   datetime.now(UTC).isoformat(),
-    }
-
-
-def _random_frame_update() -> dict:
-    """Generate a fake frame update (person tracking data) with bounding boxes."""
-    cameras = ["cam-01", "cam-02", "cam-03", "cam-04", "cam-05"]
-    zones   = ["entry_zone", "storage_area", "restricted_area", "loading_zone", "packing_area"]
-    activities = ["walking", "standing", "carrying_object", "handling_items"]
-
-    cam = random.choice(cameras)
-    n_persons = random.randint(1, 4)
-    frame_w, frame_h = 640, 360
-
-    persons = []
-    for _ in range(n_persons):
-        bw = random.randint(40, 90)
-        bh = random.randint(100, 200)
-        cx = random.randint(bw, frame_w - bw)
-        cy = random.randint(bh, frame_h - bh)
-        x1, y1 = cx - bw // 2, cy - bh // 2
-        x2, y2 = x1 + bw, y1 + bh
-        persons.append({
-            "person_id":     f"P-{random.randint(1000, 1099)}",
-            "zone":          random.choice(zones),
-            "activity":      random.choice(activities),
-            "dwell_seconds": random.randint(5, 600),
-            "bbox":          [x1, y1, x2, y2],
-            "center":        [cx, cy],
-        })
-
-    return {
-        "type":      "frame_update",
-        "camera_id": cam,
-        "persons":   persons,
-        "timestamp": datetime.now(UTC).isoformat(),
-    }
-
-
-def _camera_status_event() -> dict:
-    """Simulate an occasional camera status change."""
-    return {
-        "type":       "camera_status",
-        "camera_id":  random.choice(["cam-01", "cam-02", "cam-03", "cam-04", "cam-05"]),
-        "status":     random.choice(["online", "online", "online", "offline"]),  # online 3× more likely
-        "fps":        random.randint(8, 15),
-        "latency_ms": random.randint(30, 120),
-        "timestamp":  datetime.now(UTC).isoformat(),
-    }
-
-
-# ── Background broadcaster ────────────────────────────────────────────────────
-
-async def mock_event_broadcaster() -> None:
+async def ws_keepalive_broadcaster() -> None:
     """
     Runs forever in the background.
-    Periodically broadcasts mock events to all connected WebSocket clients.
-
-    Timeline (approximate):
-      Every  5 s → frame update
-      Every 20 s → random alert
-      Every 45 s → camera status update
-      Every 30 s → ping (keep-alive)
+    Sends a ping every 30 s to keep WebSocket connections alive through proxies.
+    No fake alert, frame, or camera status events are generated here.
+    All real-time data comes from the AI pipeline via REST ingest endpoints.
     """
-    tick = 0
     while True:
-        await asyncio.sleep(5)
-        tick += 5
-
-        # NOTE: frame_update is NOT mocked here — the AI service (VLMAIFrameProcessor)
-        # sends real frame updates with proper bbox/center coordinates via
-        # POST /api/v1/events/broadcast. Broadcasting fake frame updates here would
-        # overwrite real tracking data in the frontend store.
-        # Enable mock frame updates only when AI service is not running:
-        #   if manager.connection_count() > 0:
-        #       await manager.broadcast(_random_frame_update())
-
-        # Alert event every ~20 s
-        if tick % 20 == 0 and manager.connection_count() > 0:
-            await manager.broadcast(_random_alert_event())
-
-        # Camera status every ~45 s
-        if tick % 45 == 0 and manager.connection_count() > 0:
-            await manager.broadcast(_camera_status_event())
-
-        # Ping every 30 s (keeps the connection alive through proxies)
-        if tick % 30 == 0:
+        await asyncio.sleep(30)
+        if manager.connection_count() > 0:
             await manager.broadcast({"type": "ping", "timestamp": datetime.now(UTC).isoformat()})
 
 

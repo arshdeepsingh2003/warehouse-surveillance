@@ -1,38 +1,35 @@
 """
 ai/analyzer/activity_analyzer.py
 ──────────────────────────────────
-Activity Analyzer — classifies what each tracked person is doing.
+Activity Analyzer — classifies what each tracked person is doing
+from real movement patterns rather than random assignment.
 
-This module bridges raw tracker output (bounding box, dwell time, velocity)
-and meaningful activity labels that the rules engine can act on.
-
-Current mode: RULE-BASED (fast, no GPU, works immediately)
-  Uses physics/geometry of the bounding box + motion to classify activities.
-
-Future mode: VLM-BASED (much richer, Step 5 in roadmap)
-  Crops the person region → sends to GPT-4V / LLaVA → returns description.
-  The ActivityAnalyzer interface stays identical — only the backend changes.
+Activities are derived from tracked-person bounding-box geometry,
+velocity, dwell time, and (where available) spatial overlap with
+detected carryable objects.
 
 Classification logic
 ────────────────────
-  WALKING          → moderate velocity, upright aspect ratio
-  RUNNING          → high velocity
-  STANDING         → near-zero velocity for < LOITERING_SECONDS
-  LOITERING        → near-zero velocity for > LOITERING_SECONDS
-  FALLING          → bounding box suddenly wider than tall (person horizontal)
-                     OR extreme downward velocity spike
-  CARRYING_OBJECT  → bounding box wider than baseline person width
-  CROUCHING        → aspect ratio below normal, low velocity
-  UNAUTHORIZED_ENTRY → person in restricted zone (zone_config flag)
+  WALKING             → movement speed exceeds MOVEMENT_THRESHOLD
+  RUNNING             → speed exceeds SPEED_RUNNING_MIN
+  STANDING            → speed below MOVEMENT_THRESHOLD, short dwell
+  LOITERING           → speed below MOVEMENT_THRESHOLD,
+                         dwell > LOITERING_SECONDS,
+                         centroid stays within LOITERING_RADIUS
+  FALLING             → bounding box wider than tall (AR >
+                         FALL_ASPECT_RATIO_THRESHOLD) OR
+                         sudden AR spike OR
+                         sudden centroid y-drop
+  CARRYING_OBJECT     → spatial IoU/overlap with detected carryable
+                         objects (boxes, bags, tools)
+  HANDLING_ITEMS      → only emitted when carryable-object detection
+                         data is present AND person interacts with
+                         objects; otherwise unsupported
+  UNAUTHORIZED_ENTRY  → person's feet land in a zone with
+                         is_restricted=True (zone_config.py)
 
-Output: ActivityResult
-  {
-    activity_type:  str     (walking / standing / loitering / ...)
-    anomaly_label:  str     (normal / anomaly)
-    description:    str     (human-readable sentence for the activity log)
-    confidence:     float
-    flags:          list[str]  (specific anomaly flags for rules engine)
-  }
+Output: ActivityResult  (same schema consumed by alerts, APIs,
+                         WebSocket events, and the dashboard)
 """
 
 from __future__ import annotations
@@ -71,7 +68,7 @@ class AnomalyFlag:
     POSSIBLE_FALL      = "possible_fall"
     FAST_MOVEMENT      = "fast_movement"
     LONG_DWELL         = "long_dwell"
-    PPE_ZONE_VIOLATION = "ppe_zone_violation"  # placeholder until PPE detector added
+    PPE_ZONE_VIOLATION = "ppe_zone_violation"
 
 
 # ── Result dataclass ──────────────────────────────────────────────────────────
@@ -101,25 +98,24 @@ class ActivityResult:
 class _PersonHistory:
     """Stores recent observations for one person ID for temporal analysis."""
     track_id:          int
-    # Recent aspect ratios (w/h) — used to detect fall (ratio spikes)
     aspect_ratios:     list[float] = field(default_factory=list)
-    # Recent velocities — used to detect running / sudden stops
     velocities:        list[float] = field(default_factory=list)
-    # Baseline aspect ratio (first few observations)
+    centroids:         list[tuple[float, float]] = field(default_factory=list)
     baseline_ar:       Optional[float] = None
-    # Time of last zone entry per zone_id
     zone_first_seen:   dict[str, float] = field(default_factory=dict)
 
     HISTORY_LEN = 20
 
-    def add(self, ar: float, speed: float) -> None:
+    def add(self, ar: float, speed: float,
+            centroid: tuple[float, float]) -> None:
         self.aspect_ratios.append(ar)
         self.velocities.append(speed)
+        self.centroids.append(centroid)
         if len(self.aspect_ratios) > self.HISTORY_LEN:
             self.aspect_ratios.pop(0)
             self.velocities.pop(0)
+            self.centroids.pop(0)
         if self.baseline_ar is None and len(self.aspect_ratios) >= 5:
-            # Establish baseline aspect ratio from first observations
             self.baseline_ar = sum(self.aspect_ratios[:5]) / 5
 
     @property
@@ -140,11 +136,28 @@ class _PersonHistory:
             return False
         return self.current_ar > self.baseline_ar * 2.0
 
+    @property
+    def movement_radius(self) -> float:
+        """
+        Approximate radius of person's recent movement area.
+
+        Used to distinguish loitering from standing: a person who
+        walks within a small area will have a larger radius than
+        someone standing still.
+        """
+        if len(self.centroids) < 2:
+            return 0.0
+        recent = self.centroids[-min(10, len(self.centroids)):]
+        cx_vals = [c[0] for c in recent]
+        cy_vals = [c[1] for c in recent]
+        spread_x = max(cx_vals) - min(cx_vals)
+        spread_y = max(cy_vals) - min(cy_vals)
+        return max(spread_x, spread_y) / 2.0
+
 
 # ── IoU utility ───────────────────────────────────────────────────────────────
 
 def _iou(bbox1: tuple, bbox2: tuple) -> float:
-    """Intersection over Union for two bounding boxes (x1,y1,x2,y2)."""
     x1a, y1a, x2a, y2a = bbox1
     x1b, y1b, x2b, y2b = bbox2
     ix1 = max(x1a, x1b); iy1 = max(y1a, y1b)
@@ -160,50 +173,51 @@ def _iou(bbox1: tuple, bbox2: tuple) -> float:
 
 class ActivityAnalyzer:
     """
-    Classifies the activity of each tracked person.
+    Classifies the activity of each tracked person from real movement patterns.
+
+    All key thresholds are configurable via settings.py / .env:
+      • MOVEMENT_THRESHOLD        — min px/frame to be considered "walking"
+      • LOITERING_SECONDS         — min dwell for loitering
+      • LOITERING_RADIUS          — max centroid spread for loitering
+      • FALL_ASPECT_RATIO_THRESHOLD — w/h ratio indicating horizontal posture
 
     One shared instance per camera — persists _PersonHistory across frames.
 
     Usage:
         analyzer = ActivityAnalyzer(camera_id="cam-01")
-        results  = analyzer.analyze(tracked_persons)
+        results  = analyzer.analyze(tracked_persons, carryable_objects)
     """
 
-    # Speed thresholds (pixels/frame — depends on resolution & FPS)
-    SPEED_WALKING_MAX  = 8.0    # px/frame
-    SPEED_RUNNING_MIN  = 8.0    # px/frame
-    SPEED_STANDING_MAX = 1.5    # px/frame
+    SPEED_WALKING_MAX  = 8.0       # px/frame — upper bound for walking
+    SPEED_RUNNING_MIN  = 8.0       # px/frame — above this is running
+    CENTROID_DROP_THRESHOLD = 30.0 # pixel y-delta suggesting a fall
 
-    # Aspect ratio (width/height) thresholds
-    AR_FALL_THRESHOLD  = 1.8    # w/h > 1.8 → person is horizontal
-
-    # IoU threshold for carryable-object-to-person association
-    CARRY_IOU_THRESHOLD  = 0.05   # minimal overlap = person is holding/carrying
-    CARRY_DIST_THRESHOLD = 60.0   # pixels — object center near person bbox center
+    CARRY_IOU_THRESHOLD  = 0.05
+    CARRY_DIST_THRESHOLD = 60.0
 
     def __init__(self, camera_id: str) -> None:
         self.camera_id = camera_id
         self._history: dict[int, _PersonHistory] = {}
+
+    @property
+    def _movement_threshold(self) -> float:
+        return settings.MOVEMENT_THRESHOLD
+
+    @property
+    def _ar_fall_threshold(self) -> float:
+        return settings.FALL_ASPECT_RATIO_THRESHOLD
+
+    @property
+    def _loitering_radius(self) -> float:
+        return settings.LOITERING_RADIUS
 
     def analyze(
         self,
         persons: list[TrackedPerson],
         carryable_objects: Optional[list[Detection]] = None,
     ) -> list[ActivityResult]:
-        """
-        Classify activity for all tracked persons in one frame.
-
-        Args:
-            persons: Output of PersonTracker.update()
-            carryable_objects: Detected carryable objects (boxes, bags, etc.)
-
-        Returns:
-            List of ActivityResult, one per person.
-        """
         results = []
         active_ids = {p.track_id for p in persons}
-
-        # Prune history for persons no longer tracked
         self._history = {k: v for k, v in self._history.items() if k in active_ids}
 
         for person in persons:
@@ -217,11 +231,7 @@ class ActivityAnalyzer:
         person: TrackedPerson,
         objects: list[Detection],
     ) -> Optional[float]:
-        """
-        Check if a person is carrying/holding an object using spatial overlap.
-
-        Returns confidence score (0.0–1.0) or None if no carryable object found.
-        """
+        """Check spatial overlap between person and carryable objects."""
         px1, py1, px2, py2 = person.bbox
         pw = max(px2 - px1, 1)
         ph = max(py2 - py1, 1)
@@ -272,27 +282,28 @@ class ActivityAnalyzer:
         person: TrackedPerson,
         carryable_objects: Optional[list[Detection]] = None,
     ) -> ActivityResult:
-        """Classify one person's activity."""
+        """Classify one person's activity from real movement and posture."""
         tid = person.track_id
 
-        # Get or create history for this track
         if tid not in self._history:
             self._history[tid] = _PersonHistory(track_id=tid)
 
         hist = self._history[tid]
 
-        # Compute motion features
+        # Compute motion features from tracked-person data
         x1, y1, x2, y2 = person.bbox
         w = x2 - x1
         h = max(y2 - y1, 1)
-        ar = w / h    # aspect ratio
+        ar = w / h
+        cx = (x1 + x2) / 2.0
+        cy = (y1 + y2) / 2.0
 
         vx, vy = person.velocity
         speed  = math.sqrt(vx**2 + vy**2)
 
-        hist.add(ar, speed)
+        hist.add(ar, speed, (cx, cy))
 
-        # ── Rule 1: Restricted zone entry ─────────────────────────────────────
+        # ── Rule 1: Restricted zone entry → unauthorized entry ───────────────
         if person.is_restricted:
             return ActivityResult(
                 person_id=    person.person_id,
@@ -310,9 +321,25 @@ class ActivityAnalyzer:
                 dwell_time=   person.dwell_time,
             )
 
-        # ── Rule 2: Possible fall ─────────────────────────────────────────────
-        is_fall = ar > self.AR_FALL_THRESHOLD or hist.ar_spike()
-        if is_fall and person.age > 10:
+        # ── Rule 2: Possible fall (AR change + centroid drop) ─────────────────
+        # A fall is detected when:
+        #   a) bounding box becomes wider than tall (horizontal posture), OR
+        #   b) aspect ratio spikes relative to baseline, OR
+        #   c) centroid y-position drops suddenly (person falling down)
+        is_ar_fall  = ar > self._ar_fall_threshold or hist.ar_spike()
+        is_drop_fall = False
+        if len(hist.centroids) >= 3:
+            cy_vals = [c[1] for c in hist.centroids[-3:]]
+            drop_rate = cy_vals[-1] - cy_vals[0]
+            is_drop_fall = drop_rate > self.CENTROID_DROP_THRESHOLD
+
+        if (is_ar_fall or is_drop_fall) and person.age > 10:
+            desc_parts = []
+            if is_ar_fall:
+                desc_parts.append("horizontal posture detected")
+            if is_drop_fall:
+                desc_parts.append("sudden vertical drop")
+            detail = " — ".join(desc_parts) if desc_parts else "fall detected"
             return ActivityResult(
                 person_id=    person.person_id,
                 track_id=     tid,
@@ -320,7 +347,7 @@ class ActivityAnalyzer:
                 anomaly_label="anomaly",
                 description=  (
                     f"{person.person_id} appears to have fallen in "
-                    f"'{person.zone_name}' — stationary horizontal posture detected."
+                    f"'{person.zone_name}' — {detail}."
                 ),
                 confidence=   0.85,
                 flags=        [AnomalyFlag.POSSIBLE_FALL],
@@ -329,7 +356,7 @@ class ActivityAnalyzer:
                 dwell_time=   person.dwell_time,
             )
 
-        # ── Rule 3: Running ───────────────────────────────────────────────────
+        # ── Rule 3: Running (velocity exceeds running threshold) ──────────────
         if speed > self.SPEED_RUNNING_MIN:
             return ActivityResult(
                 person_id=    person.person_id,
@@ -347,9 +374,10 @@ class ActivityAnalyzer:
                 dwell_time=   person.dwell_time,
             )
 
-        # ── Rule 4: Loitering ─────────────────────────────────────────────────
-        if (speed < self.SPEED_STANDING_MAX
-                and person.dwell_time > settings.LOITERING_SECONDS):
+        # ── Rule 4: Loitering (low speed + long dwell + small area) ───────────
+        if (speed < self._movement_threshold
+                and person.dwell_time > settings.LOITERING_SECONDS
+                and hist.movement_radius < self._loitering_radius):
             return ActivityResult(
                 person_id=    person.person_id,
                 track_id=     tid,
@@ -357,7 +385,8 @@ class ActivityAnalyzer:
                 anomaly_label="anomaly",
                 description=  (
                     f"{person.person_id} has been stationary in "
-                    f"'{person.zone_name}' for {int(person.dwell_time)}s — loitering detected."
+                    f"'{person.zone_name}' for {int(person.dwell_time)}s "
+                    f"— loitering detected."
                 ),
                 confidence=   0.80,
                 flags=        [AnomalyFlag.LOITERING, AnomalyFlag.LONG_DWELL],
@@ -366,7 +395,7 @@ class ActivityAnalyzer:
                 dwell_time=   person.dwell_time,
             )
 
-        # ── Rule 5: Carrying object (spatial relationship with detected objects)
+        # ── Rule 5: Carrying object (spatial overlap with detected objects) ──
         carry_conf = None
         if carryable_objects:
             carry_conf = self._carrying_object(person, carryable_objects)
@@ -391,16 +420,36 @@ class ActivityAnalyzer:
                 dwell_time=   person.dwell_time,
             )
 
+        # ── Rule 5b: Handling items (only when object detection data exists) ──
+        # handling_items is only emitted when carryable objects are present
+        # AND the person is actively interacting with them. Without object
+        # detection data this activity is unsupported — no fake events.
+        if carryable_objects and len(carryable_objects) > 0:
+            handling_conf = self._carrying_object(person, carryable_objects)
+            if handling_conf is not None:
+                return ActivityResult(
+                    person_id=    person.person_id,
+                    track_id=     tid,
+                    activity_type=ActivityLabel.HANDLING_ITEMS,
+                    anomaly_label="normal",
+                    description=  (
+                        f"{person.person_id} is handling items at "
+                        f"'{person.zone_name}'."
+                    ),
+                    confidence=   min(0.80, handling_conf * 0.9),
+                    flags=        [],
+                    zone_id=      person.zone_id,
+                    zone_name=    person.zone_name,
+                    dwell_time=   person.dwell_time,
+                )
+
         # ── Rule 6: Normal activities (no anomaly) ────────────────────────────
-        if speed < self.SPEED_STANDING_MAX:
+        if speed < self._movement_threshold:
             activity = ActivityLabel.STANDING
             desc = (f"{person.person_id} is standing in '{person.zone_name}'.")
-        elif speed < self.SPEED_WALKING_MAX:
+        else:
             activity = ActivityLabel.WALKING
             desc = (f"{person.person_id} is walking through '{person.zone_name}'.")
-        else:
-            activity = ActivityLabel.HANDLING_ITEMS
-            desc = (f"{person.person_id} is active in '{person.zone_name}'.")
 
         return ActivityResult(
             person_id=    person.person_id,
@@ -414,35 +463,3 @@ class ActivityAnalyzer:
             zone_name=    person.zone_name,
             dwell_time=   person.dwell_time,
         )
-
-    # ── Future VLM integration ────────────────────────────────────────────────
-    # When VLM is available, add this method:
-    #
-    # async def analyze_with_vlm(
-    #     self,
-    #     person: TrackedPerson,
-    #     frame:  np.ndarray,
-    # ) -> ActivityResult:
-    #     """Crop person region and query VLM for rich description."""
-    #     x1, y1, x2, y2 = person.bbox
-    #     crop = frame[y1:y2, x1:x2]
-    #
-    #     # Query VLM (GPT-4V, LLaVA, or local Ollama model)
-    #     description = await self._vlm_client.query(
-    #         image=crop,
-    #         prompt=(
-    #             "Describe what this warehouse worker is doing in one sentence. "
-    #             "Focus on: what they are holding, their posture, and any safety concerns."
-    #         )
-    #     )
-    #
-    #     # Parse VLM output into structured result
-    #     anomaly_label = self._vlm_client.classify(description)
-    #     return ActivityResult(
-    #         person_id=    person.person_id,
-    #         activity_type=ActivityLabel.UNKNOWN,
-    #         anomaly_label=anomaly_label,
-    #         description=  description,
-    #         confidence=   0.90,
-    #         zone_id=      person.zone_id,
-    #     )

@@ -2,7 +2,7 @@
 import { useState } from 'react'
 import {
   LayoutDashboard, Video, Bell, ClipboardList,
-  BarChart3, User, BrainCircuit, Settings, Shield, ChevronLeft, ChevronRight
+  BarChart3, User, BrainCircuit, Settings, Shield, ChevronLeft, ChevronRight, Eye
 } from 'lucide-react'
 import './Sidebar.css'
 
@@ -16,6 +16,7 @@ const NAV: NavItem[] = [
   { label: 'Analytics',      icon: <BarChart3       size={16} />, page: 'analytics'  },
   { label: 'Person Timeline',icon: <User            size={16} />, page: 'timeline'   },
   { label: 'Intelligence',   icon: <BrainCircuit    size={16} />, page: 'intelligence' },
+  { label: 'AI Insights',    icon: <Eye             size={16} />, page: 'ai-insights' },
 ]
 
 interface Props { activePage: string; onNavigate: (page: string) => void }

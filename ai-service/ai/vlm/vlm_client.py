@@ -37,8 +37,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
+import os
 import random
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Optional
@@ -56,17 +59,18 @@ logger = logging.getLogger(__name__)
 @dataclass
 class VLMResult:
     """Structured output from a VLM analysis call."""
-    person_id:     str
-    camera_id:     str
-    zone_id:       str
-    description:   str             # full natural-language description
-    activity_type: str             # inferred activity label
-    anomaly_label: str             # "normal" | "anomaly"
-    severity:      str             # "none" | "low" | "medium" | "high"
-    confidence:    float           # 0.0–1.0
-    raw_response:  str = ""        # original model output (for debugging)
-    latency_ms:    int = 0         # inference time
-    backend_used:  str = ""        # which model was actually used
+    person_id:         str
+    camera_id:         str
+    zone_id:           str
+    description:       str             # full natural-language description
+    activity_type:     str             # inferred activity label
+    anomaly_label:     str             # "normal" | "anomaly"
+    severity:          str             # "none" | "low" | "medium" | "high"
+    confidence:        float           # 0.0–1.0
+    raw_response:      str = ""        # original model output (for debugging)
+    latency_ms:        int = 0         # inference time
+    backend_used:      str = ""        # which model was actually used
+    objects_detected:  list = field(default_factory=list)  # objects identified by VLM
 
     @property
     def is_anomaly(self) -> bool:
@@ -333,6 +337,100 @@ class GeminiVLMBackend(BaseVLMBackend):
         return response.text.strip()
 
 
+# ── Backend 6: Qwen2.5-VL via Ollama (dedicated warehouse surveillance) ─────
+
+_WAREHOUSE_PROMPT = """\
+You are a warehouse surveillance analysis AI. Analyze the worker in this image \
+and return ONLY valid JSON (no markdown, no extra text):
+
+{
+  "activity_description": "Describe what the worker is doing in one sentence. \
+Mention posture, movements, and interactions with objects.",
+  "objects_detected": ["list of visible objects being handled, e.g. boxes, \
+tools, forklift, shelves, bags, pallets, scanner, clipboard"],
+  "activity_category": "one of: walking, standing, carrying, handling_items, \
+loading, unloading, operating_equipment, crouching, climbing, inspecting, unknown",
+  "confidence": 0.0-1.0
+}
+
+Rules:
+- If no person is clearly visible, set activity_category to "unknown" and confidence to 0.0
+- Note if activity appears normal or unusual for warehouse operations
+- Flag safety concerns (missing PPE, running, unsafe ladder use, fall risk) in the description
+- Be concise, factual, and specific"""
+
+
+class QwenVLMBackend(BaseVLMBackend):
+    """
+    Qwen2.5-VL via local Ollama — dedicated warehouse surveillance backend.
+
+    Requirements:
+        1. Install Ollama: https://ollama.ai
+        2. Pull the Qwen2.5-VL model:
+             ollama pull qwen2.5-vl:7b
+        3. Set in .env:
+             VLM_BACKEND=qwen_vl
+             OLLAMA_HOST=http://localhost:11434
+             QWEN_VL_MODEL=qwen2.5-vl
+
+    Privacy: 100% local — no data leaves your server
+    Cost:    Free (electricity only)
+    Latency: 1–5s on GPU, 5–15s on CPU
+    """
+
+    PROMPT = _WAREHOUSE_PROMPT
+
+    def __init__(
+        self,
+        model:    str = "qwen2.5-vl",
+        base_url: str = "http://localhost:11434",
+    ) -> None:
+        import aiohttp
+        self._model    = model
+        self._base_url = base_url
+        self._session: Optional[aiohttp.ClientSession] = None
+        logger.info(f"Qwen2.5-VL backend: {model} at {base_url}")
+
+    async def warmup(self) -> None:
+        """Ensure the Qwen model is loaded into Ollama memory."""
+        import aiohttp
+        self._session = aiohttp.ClientSession()
+        try:
+            async with self._session.post(
+                f"{self._base_url}/api/generate",
+                json={"model": self._model, "prompt": "hello", "stream": False},
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status == 200:
+                    logger.info(f"Qwen2.5-VL model {self._model} warmed up")
+                else:
+                    logger.warning(f"Qwen2.5-VL warmup returned {resp.status}")
+        except Exception as e:
+            logger.warning(f"Qwen2.5-VL not available: {e}")
+
+    async def query(self, image_b64: str, prompt: str) -> str:
+        if not self._session:
+            import aiohttp
+            self._session = aiohttp.ClientSession()
+        try:
+            async with self._session.post(
+                f"{self._base_url}/api/generate",
+                json={
+                    "model":   self._model,
+                    "prompt":  prompt,
+                    "images":  [image_b64],
+                    "stream":  False,
+                    "options": {"temperature": 0.1, "num_predict": 300},
+                },
+                timeout=aiohttp.ClientTimeout(total=60),
+            ) as resp:
+                data = await resp.json()
+                return data.get("response", "").strip()
+        except Exception as e:
+            logger.warning(f"Qwen2.5-VL query failed: {e}")
+            return ""
+
+
 # ── Factory ───────────────────────────────────────────────────────────────────
 
 def _build_backend(name: str) -> BaseVLMBackend:
@@ -358,6 +456,12 @@ def _build_backend(name: str) -> BaseVLMBackend:
             return OllamaVLMBackend(
                 model=    settings.OLLAMA_MODEL,
                 base_url= settings.OLLAMA_BASE_URL,
+            )
+
+        if name == "qwen_vl":
+            return QwenVLMBackend(
+                model=    settings.QWEN_VL_MODEL,
+                base_url= settings.OLLAMA_HOST,
             )
 
         if name == "gemini":
@@ -564,6 +668,73 @@ class VLMClient:
             backend_used=  type(self._backend).__name__,
         )
 
+    def _parse_qwen_response(
+        self,
+        raw:        str,
+        person_id:  str,
+        camera_id:  str,
+        zone_id:    str,
+        zone_name:  str,
+        latency_ms: int,
+    ) -> VLMResult:
+        """
+        Parse Qwen2.5-VL JSON structured response into VLMResult.
+
+        Expected JSON schema:
+          {
+            "activity_description": "...",
+            "objects_detected": [...],
+            "activity_category": "...",
+            "confidence": 0.0-1.0
+          }
+        """
+        try:
+            cleaned = raw.strip()
+            if cleaned.startswith("```"):
+                cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+                cleaned = re.sub(r"\s*```$", "", cleaned)
+            data = json.loads(cleaned)
+            description = data.get("activity_description", raw[:200])
+            objects     = data.get("objects_detected", [])
+            category    = data.get("activity_category", "unknown").lower().replace(" ", "_")
+            confidence  = float(data.get("confidence", 0.5))
+        except (json.JSONDecodeError, ValueError, TypeError):
+            logger.warning(f"Failed to parse Qwen JSON response, using raw text: {raw[:80]}…")
+            description = raw[:200]
+            objects     = []
+            category    = "unknown"
+            confidence  = 0.5
+
+        # Derive anomaly + severity from activity category
+        anomalous_cats = {"loitering", "unauthorized_entry", "running",
+                          "falling", "climbing", "operating_equipment"}
+        danger_cats    = {"falling", "unauthorized_entry"}
+
+        if category in danger_cats:
+            anomaly = "anomaly"
+            severity = "high"
+        elif category in anomalous_cats:
+            anomaly = "anomaly"
+            severity = "medium"
+        else:
+            anomaly = "normal"
+            severity = "none"
+
+        return VLMResult(
+            person_id=        person_id,
+            camera_id=        camera_id,
+            zone_id=          zone_id,
+            description=      description,
+            activity_type=    category,
+            anomaly_label=    anomaly,
+            severity=         severity,
+            confidence=       min(max(confidence, 0.0), 1.0),
+            raw_response=     raw,
+            latency_ms=       latency_ms,
+            backend_used=     type(self._backend).__name__,
+            objects_detected= objects,
+        )
+
     def _fallback_result(
         self, person_id: str, camera_id: str, zone_id: str, zone_name: str
     ) -> VLMResult:
@@ -579,6 +750,119 @@ class VLMClient:
             confidence=    0.5,
             backend_used=  "fallback",
         )
+
+    async def analyze_crop(
+        self,
+        crop_path:   str,
+        metadata:    dict,
+    ) -> VLMResult:
+        """
+        Analyze a previously saved crop image from disk.
+
+        This is the VLM interface abstraction required by the next-gen
+        pipeline.  It decouples crop generation (CropManager) from VLM
+        inference so that crops can be cached, inspected, or reprocessed
+        without re-running detection/tracking.
+
+        Args:
+            crop_path:  Absolute path to a JPEG crop file on disk.
+            metadata:   Dict with at minimum:
+                            person_id     – str
+                            camera_id     – str
+                            zone_id       – str
+                            zone_name     – str
+                            is_restricted – bool
+                            extra_context – str (optional rule context)
+
+        Returns:
+            VLMResult  (same schema as analyze_person)
+        """
+        person_id     = metadata.get("person_id",     "unknown")
+        camera_id     = metadata.get("camera_id",     "unknown")
+        zone_id       = metadata.get("zone_id",       "unknown")
+        zone_name     = metadata.get("zone_name",     "Unknown")
+        is_restricted = metadata.get("is_restricted", False)
+        extra_context = metadata.get("extra_context", "")
+
+        # Check cache
+        cache_key = f"{person_id}:{zone_id}"
+        if cache_key in self._cache:
+            cached_at, cached_result = self._cache[cache_key]
+            if time.time() - cached_at < settings.VLM_CACHE_TTL_SECONDS:
+                logger.debug(f"VLM cache hit: {cache_key}")
+                return cached_result
+
+        # Read crop from disk
+        if not os.path.isfile(crop_path):
+            logger.warning(f"Crop file not found: {crop_path}")
+            return self._fallback_result(person_id, camera_id, zone_id, zone_name)
+
+        try:
+            crop = cv2.imread(crop_path)
+            if crop is None or crop.size == 0:
+                logger.warning(f"Empty crop at: {crop_path}")
+                return self._fallback_result(person_id, camera_id, zone_id, zone_name)
+        except Exception as e:
+            logger.warning(f"Failed to read crop {crop_path}: {e}")
+            return self._fallback_result(person_id, camera_id, zone_id, zone_name)
+
+        if crop.shape[0] < 20 or crop.shape[1] < 20:
+            return self._fallback_result(person_id, camera_id, zone_id, zone_name)
+
+        # Detect if using Qwen backend
+        is_qwen = isinstance(self._backend, QwenVLMBackend)
+
+        # Build prompt from metadata (Qwen uses its own warehouse prompt)
+        if is_qwen:
+            prompt = QwenVLMBackend.PROMPT
+        else:
+            prompt = self._build_prompt(zone_name, is_restricted, extra_context)
+
+        # Encode
+        image_b64 = encode_frame_b64(crop, quality=settings.VLM_JPEG_QUALITY)
+
+        # Query VLM
+        t0 = time.monotonic()
+        try:
+            raw = await self._backend.query(image_b64, prompt)
+            latency_ms = int((time.monotonic() - t0) * 1000)
+        except Exception as e:
+            logger.error(f"VLM query error for {person_id}: {e}")
+            return self._fallback_result(person_id, camera_id, zone_id, zone_name)
+
+        if not raw:
+            return self._fallback_result(person_id, camera_id, zone_id, zone_name)
+
+        if is_qwen:
+            result = self._parse_qwen_response(
+                raw=raw, person_id=person_id, camera_id=camera_id,
+                zone_id=zone_id, zone_name=zone_name,
+                latency_ms=latency_ms,
+            )
+        else:
+            result = self._parse_response(
+                raw=raw, person_id=person_id, camera_id=camera_id,
+                zone_id=zone_id, zone_name=zone_name,
+                latency_ms=latency_ms,
+            )
+
+        self._cache[cache_key] = (time.time(), result)
+
+        # Detailed logging
+        log = (
+            f"[VLM] camera={camera_id} person={person_id} "
+            f"crop={crop_path} backend={type(self._backend).__name__} "
+            f"latency={latency_ms}ms "
+            f"activity={result.activity_type} "
+            f"anomaly={result.anomaly_label} "
+            f"confidence={result.confidence:.2f} "
+            f"desc=\"{result.description[:80]}\""
+        )
+        if is_qwen:
+            obj_str = ",".join(result.objects_detected) if result.objects_detected else "none"
+            log += f" objects=[{obj_str}]"
+        logger.info(log)
+        return result
 
     def get_cache_stats(self) -> dict:
         return {

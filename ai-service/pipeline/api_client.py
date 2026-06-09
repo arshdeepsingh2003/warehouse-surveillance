@@ -65,14 +65,17 @@ class APIClient:
 
     async def post_activity(
         self,
-        camera_id:     str,
-        zone:          str,
-        person_id:     str,
-        activity_type: str,
-        description:   str,
-        anomaly_label: str,
-        dwell_seconds: int,
-        confidence:    float,
+        camera_id:       str,
+        zone:            str,
+        person_id:       str,
+        activity_type:   str,
+        description:     str,
+        anomaly_label:   str,
+        dwell_seconds:   int,
+        confidence:      float,
+        objects_detected: list | None = None,
+        backend_used:    str = "",
+        latency_ms:      int = 0,
     ) -> None:
         """
         POST a new activity record to /api/v1/activities/ingest.
@@ -81,16 +84,19 @@ class APIClient:
         In mock mode the backend stores it in memory (the mock list).
         """
         payload = {
-            "id":            str(uuid.uuid4()),
-            "person_id":     person_id,
-            "camera_id":     camera_id,
-            "zone":          zone,
-            "activity_type": activity_type,
-            "description":   description,
-            "anomaly_label": anomaly_label,
-            "dwell_seconds": dwell_seconds,
-            "confidence":    confidence,
-            "timestamp":     datetime.now(timezone.utc).isoformat(),
+            "id":              str(uuid.uuid4()),
+            "person_id":       person_id,
+            "camera_id":       camera_id,
+            "zone":            zone,
+            "activity_type":   activity_type,
+            "description":     description,
+            "anomaly_label":   anomaly_label,
+            "dwell_seconds":   dwell_seconds,
+            "confidence":      confidence,
+            "objects_detected": objects_detected or [],
+            "backend_used":    backend_used,
+            "latency_ms":      latency_ms,
+            "timestamp":       datetime.now(timezone.utc).isoformat(),
         }
         await self._post("/api/v1/activities/ingest", payload)
 
@@ -106,12 +112,16 @@ class APIClient:
         person_id:    str,
         confidence:   float,
         snapshot_b64: Optional[str] = None,
+        source:       str = "rules_engine",
     ) -> None:
         """
         POST a new alert to /api/v1/alerts/ingest.
 
         Includes deduplication: if the same (camera_id, alert_type)
         combination was seen within the last 30 seconds, skip.
+
+        Args:
+            source: Origin of the alert — "rules_engine" | "activity_analyzer" | "manual_test" | "other"
         """
         dedup_key = f"{camera_id}:{alert_type}"
         now = time.monotonic()
@@ -140,9 +150,10 @@ class APIClient:
             "status":       "active",
             "triggered_at": datetime.now(timezone.utc).isoformat(),
             "snapshot_b64": snapshot_b64,
+            "source":       source,
         }
         await self._post("/api/v1/alerts/ingest", payload)
-        logger.info(f"🚨 Alert posted: [{severity.upper()}] {alert_type} @ {camera_id} ({zone})")
+        logger.info(f"🚨 Alert posted: [{severity.upper()}] {alert_type} @ {camera_id} ({zone}) source={source}")
 
     # ── Camera status heartbeat ───────────────────────────────────────────────
 

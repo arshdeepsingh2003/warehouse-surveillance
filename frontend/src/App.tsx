@@ -12,6 +12,7 @@ import { ActivitiesPage } from './pages/ActivitiesPage'
 import { AnalyticsPage }  from './pages/AnalyticsPage'
 import { TimelinePage }   from './pages/TimelinePage'
 import { IntelligencePage } from './pages/IntelligencePage'
+import { AIInsightsPage }  from './pages/AIInsightsPage'
 import { useWebSocket }   from './hooks/useWebSocket'
 
 const qc = new QueryClient({
@@ -31,6 +32,7 @@ const PAGE_TITLES: Record<string, string> = {
   analytics:  'Analytics & Reports',
   timeline:   'Person Timeline',
   intelligence: 'AI Intelligence Dashboard',
+  'ai-insights': 'AI Insights — VLM Activity Understanding',
 }
 
 function AppInner() {
@@ -63,6 +65,7 @@ function AppInner() {
             {page === 'analytics'  && <AnalyticsPage />}
             {page === 'timeline'   && <TimelinePage  />}
             {page === 'intelligence' && <IntelligencePage />}
+            {page === 'ai-insights' && <AIInsightsPage />}
           </ErrorBoundary>
         </main>
       </div>

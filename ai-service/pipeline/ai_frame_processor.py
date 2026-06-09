@@ -39,6 +39,7 @@ from typing import Optional
 import cv2
 import numpy as np
 
+from ai.crop.crop_manager import CropManager
 from ai.detector.person_detector import PersonDetector
 from ai.tracker.person_tracker import PersonTracker, TrackedPerson
 from ai.analyzer.activity_analyzer import ActivityResult
@@ -65,6 +66,7 @@ class _CameraPipeline:
         self.recognizer = ActivityRecognizer(camera_id)
         self.rules      = RulesEngine(camera_id)
         self.overlay    = FrameOverlay(camera_id)
+        self.crop_mgr   = CropManager(camera_id)
         self.frame_skip_counter = 0
         # Cache last tracking results for frames we skip detection on
         self._last_persons:    list[TrackedPerson] = []
@@ -309,6 +311,7 @@ class AIFrameProcessor:
                 person_id=   alert.person_id,
                 confidence=  alert.confidence,
                 snapshot_b64=snapshot,
+                source=      "rules_engine",
             )
 
         # Frame update broadcast (real-time person positions for dashboard)
@@ -423,9 +426,12 @@ class VLMAIFrameProcessor(AIFrameProcessor):
         await self._vlm.warmup()
 
     def start_background_tasks(self) -> None:
-        """Launch ZoneSummarizer loop. Call after the event loop starts."""
+        """Launch ZoneSummarizer loop and crop cleanup tasks. Call after the event loop starts."""
         asyncio.create_task(self._summarizer.run())
         logger.info("ZoneSummarizer background task started")
+        # Start crop cleanup for all existing pipelines
+        for pipe in self._pipelines.values():
+            pipe.crop_mgr.start_cleanup_task()
 
     async def process(self, frame_data: FrameData) -> None:
         """
@@ -460,6 +466,7 @@ class VLMAIFrameProcessor(AIFrameProcessor):
                 debug_dir=settings.DEBUG_SAVE_DIR if settings.DEBUG_SAVE_IMAGES else None,
             )
             logger.info(f"[{cam_id}] VLM pipeline initialised")
+            self._pipelines[cam_id].crop_mgr.start_cleanup_task()
 
         pipe = self._pipelines[cam_id]
         pipe.frame_skip_counter += 1
@@ -497,6 +504,18 @@ class VLMAIFrameProcessor(AIFrameProcessor):
                     f"(active={n_active}, lost={n_lost}) | "
                     f"ids=[{', '.join(p.person_id for p in persons)}]"
                 )
+
+                # ── Crop Generation (for each tracked person) ─────────────
+                ts = frame_data.timestamp or datetime.now(timezone.utc).isoformat()
+                for p in persons:
+                    pipe.crop_mgr.save_crop(
+                        frame=        frame,
+                        bbox=         p.bbox,
+                        track_id=     p.track_id,
+                        person_id=    p.person_id,
+                        timestamp=    ts,
+                        frame_number= frame_data.frame_number,
+                    )
 
                 carryable = self._detector.detect_carryable_objects(frame, cam_id)
 
@@ -631,11 +650,16 @@ class VLMAIFrameProcessor(AIFrameProcessor):
         activities: list[ActivityResult],
     ) -> None:
         """
-        Query VLM for up to MAX_PERSONS_PER_FRAME persons concurrently.
+        Query VLM for up to MAX_PERSONS_PER_FRAME persons concurrently,
+        using saved crop images from the CropManager.
 
         Merges VLM results back into the activity cache so the next
         _post_results call uses VLM-enriched descriptions.
         """
+        pipe = self._pipelines.get(cam_id)
+        if pipe is None:
+            return
+
         # Prioritize anomalous persons and persons in restricted zones
         priority = sorted(
             persons,
@@ -647,23 +671,30 @@ class VLMAIFrameProcessor(AIFrameProcessor):
         # Build lookup: track_id → activity
         act_map = {a.track_id: a for a in activities}
 
-        # Fire all VLM calls concurrently
-        tasks = [
-            self._vlm.analyze_person(
-                frame=         frame,
-                bbox=          p.bbox,
-                person_id=     p.person_id,
-                camera_id=     cam_id,
-                zone_id=       p.zone_id,
-                zone_name=     p.zone_name,
-                is_restricted= p.is_restricted,
-                extra_context= (
+        # Use saved crop images instead of raw frame+bbox
+        tasks = []
+        for p in batch:
+            crop_path = pipe.crop_mgr.get_crop_path(p.person_id)
+            if crop_path is None:
+                logger.debug(
+                    f"[{cam_id}] No crop available for {p.person_id}, skipping VLM"
+                )
+                continue
+            metadata = {
+                "person_id":     p.person_id,
+                "camera_id":     cam_id,
+                "zone_id":       p.zone_id,
+                "zone_name":     p.zone_name,
+                "is_restricted": p.is_restricted,
+                "extra_context": (
                     f"Rule-based detection: {act_map[p.track_id].activity_type if p.track_id in act_map else 'unknown'}. "
                     f"Dwell time: {p.dwell_time:.0f}s."
                 ),
-            )
-            for p in batch
-        ]
+            }
+            tasks.append(self._vlm.analyze_crop(crop_path=crop_path, metadata=metadata))
+
+        if not tasks:
+            return
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -674,13 +705,14 @@ class VLMAIFrameProcessor(AIFrameProcessor):
 
             # Cache VLM result (used in next post_results call)
             self._vlm_cache[person.person_id] = {
-                "description":   result.description,
-                "activity_type": result.activity_type,
-                "anomaly_label": result.anomaly_label,
-                "severity":      result.severity,
-                "confidence":    result.confidence,
-                "backend_used":  result.backend_used,
-                "latency_ms":    result.latency_ms,
+                "description":      result.description,
+                "activity_type":    result.activity_type,
+                "anomaly_label":    result.anomaly_label,
+                "severity":         result.severity,
+                "confidence":       result.confidence,
+                "backend_used":     result.backend_used,
+                "latency_ms":       result.latency_ms,
+                "objects_detected": getattr(result, "objects_detected", []),
             }
 
             logger.info(
@@ -715,15 +747,22 @@ class VLMAIFrameProcessor(AIFrameProcessor):
             if vlm_data.get("anomaly_label") == "anomaly":
                 anomaly = "anomaly"
 
+            objects_detected = vlm_data.get("objects_detected", [])
+            backend_used     = vlm_data.get("backend_used", "")
+            latency_ms       = vlm_data.get("latency_ms", 0)
+
             await self._api.post_activity(
-                camera_id=     cam_id,
-                zone=          activity.zone_id,
-                person_id=     activity.person_id,
-                activity_type= act_type,
-                description=   description,
-                anomaly_label= anomaly,
-                dwell_seconds= int(activity.dwell_time),
-                confidence=    confidence,
+                camera_id=       cam_id,
+                zone=            activity.zone_id,
+                person_id=       activity.person_id,
+                activity_type=   act_type,
+                description=     description,
+                anomaly_label=   anomaly,
+                dwell_seconds=   int(activity.dwell_time),
+                confidence=      confidence,
+                objects_detected=objects_detected,
+                backend_used=    backend_used,
+                latency_ms=      latency_ms,
             )
 
             # Feed ZoneSummarizer buffer
@@ -754,6 +793,7 @@ class VLMAIFrameProcessor(AIFrameProcessor):
                 person_id=   alert.person_id,
                 confidence=  alert.confidence,
                 snapshot_b64=snapshot,
+                source=      "rules_engine",
             )
 
             # Feed ZoneSummarizer alert buffer

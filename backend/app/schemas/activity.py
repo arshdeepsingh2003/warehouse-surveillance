@@ -47,6 +47,9 @@ class ActivityBase(BaseModel):
     description:   str           = Field(..., description="VLM natural-language description")
     anomaly_label: AnomalyLabel  = AnomalyLabel.NORMAL
     dwell_seconds: int           = Field(0, description="Seconds person has been in this zone")
+    objects_detected: list[str]  = Field(default_factory=list, description="Objects identified by VLM")
+    backend_used:    str         = Field("", description="VLM backend that generated this activity")
+    latency_ms:      int         = Field(0, description="VLM inference latency in milliseconds")
 
 
 # ── Response ──────────────────────────────────────────────────────────────────

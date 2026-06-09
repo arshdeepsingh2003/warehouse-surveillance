@@ -1,10 +1,11 @@
 // pages/DashboardPage.tsx
 import { useQuery } from '@tanstack/react-query'
-import { Activity, AlertTriangle, Camera, Users, TrendingUp, Zap } from 'lucide-react'
+import { Activity, AlertTriangle, Camera, Users, TrendingUp, Zap, Eye, Sparkles } from 'lucide-react'
 import { api } from '../api/client'
 import { AlertPanel } from '../components/alerts/AlertPanel'
 import { AlertTrendChart, ZoneRiskChart } from '../components/analytics/AnalyticsCharts'
 import { useAlertStore } from '../store/alertStore'
+import { useVLMStore } from '../store/vlmStore'
 import './Dashboard.css'
 
 const ACCENT_MAP: Record<string, string> = {
@@ -41,6 +42,8 @@ export function DashboardPage() {
   })
   const liveAlerts = useAlertStore(s => s.liveAlerts)
   const liveActive = liveAlerts.filter(a => a.status === 'active').length
+  const vlmInsights = useVLMStore(s => s.insights)
+  const recentVLM = vlmInsights.slice(0, 6)
 
   const s = data?.summary
 
@@ -97,6 +100,43 @@ export function DashboardPage() {
         </div>
         <div>
           <ZoneRiskChart />
+        </div>
+      </div>
+
+      <div className="dashboard-section vlm-stream-section">
+        <div className="vlm-stream-header">
+          <Sparkles size={14} />
+          <span>Latest VLM Activity (Qwen2.5-VL)</span>
+          {recentVLM.length > 0 && (
+            <span className="vlm-stream-badge">{vlmInsights.length} insights</span>
+          )}
+        </div>
+        <div className="vlm-stream-body">
+          {recentVLM.length > 0 ? (
+            recentVLM.map((insight) => (
+              <div
+                key={insight.id}
+                className={`vlm-stream-item ${insight.label === 'anomaly' ? 'vlm-stream-item-anomaly' : ''}`}
+              >
+                <div className="vlm-stream-item-left">
+                  <span className={`vlm-stream-dot ${insight.label === 'anomaly' ? 'vlm-stream-dot-anomaly' : 'vlm-stream-dot-normal'}`} />
+                  <span className="vlm-stream-person">{insight.person_id}</span>
+                  <span className="vlm-stream-camera">{insight.camera_id}</span>
+                </div>
+                <span className="vlm-stream-desc">{insight.description.slice(0, 60)}</span>
+                <div className="vlm-stream-item-right">
+                  <span className="vlm-stream-activity">{insight.activity}</span>
+                  <span className="vlm-stream-confidence">{Math.round(insight.confidence * 100)}%</span>
+                  <span className="vlm-stream-time">{new Date(insight.timestamp).toLocaleTimeString()}</span>
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="vlm-stream-empty">
+              <Eye size={18} />
+              <span>Waiting for VLM insights from Qwen2.5-VL…</span>
+            </div>
+          )}
         </div>
       </div>
 

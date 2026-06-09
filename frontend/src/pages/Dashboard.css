@@ -92,3 +92,135 @@
 }
 .system-status-text-ok { color: var(--accent-green); }
 .system-status-text-fail { color: var(--accent-red); }
+
+/* ── VLM Activity Stream Widget ──────────────────────────────────────────────── */
+.vlm-stream-section {
+  background: var(--surface-800);
+  border: 1px solid var(--surface-600);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.vlm-stream-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--surface-700);
+  border-bottom: 1px solid var(--surface-600);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.vlm-stream-badge {
+  margin-left: auto;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--accent-cyan);
+  background: rgba(var(--accent-cyan-rgb), 0.1);
+  padding: 1px 6px;
+  border-radius: 2px;
+}
+
+.vlm-stream-body {
+  display: flex;
+  flex-direction: column;
+}
+
+.vlm-stream-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--surface-700);
+  color: var(--text-secondary);
+}
+
+.vlm-stream-item:last-child {
+  border-bottom: none;
+}
+
+.vlm-stream-item-anomaly {
+  background: rgba(var(--accent-red-rgb), 0.03);
+}
+
+.vlm-stream-item-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 120px;
+}
+
+.vlm-stream-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.vlm-stream-dot-normal { background: var(--accent-green); }
+.vlm-stream-dot-anomaly { background: var(--accent-red); animation: pulse 1.5s infinite; }
+
+.vlm-stream-person {
+  font-family: var(--font-mono);
+  color: var(--accent-cyan);
+  font-weight: 500;
+}
+
+.vlm-stream-camera {
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.vlm-stream-desc {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vlm-stream-item-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.vlm-stream-activity {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 1px 5px;
+  border-radius: 2px;
+  background: rgba(var(--accent-cyan-rgb), 0.12);
+  color: var(--accent-cyan);
+  border: 1px solid rgba(var(--accent-cyan-rgb), 0.2);
+}
+
+.vlm-stream-confidence {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  min-width: 32px;
+  text-align: right;
+}
+
+.vlm-stream-time {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  min-width: 70px;
+  text-align: right;
+}
+
+.vlm-stream-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 20px;
+  color: var(--text-muted);
+  font-size: 12px;
+}

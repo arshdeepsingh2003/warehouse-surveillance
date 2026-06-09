@@ -7,7 +7,7 @@ This file:
   1. Creates the FastAPI app instance.
   2. Configures CORS (so the React frontend can call our API).
   3. Registers all route routers (cameras, alerts, activities, analytics, ws).
-  4. Starts the mock event broadcaster as a background task on startup.
+  4. Starts the WebSocket keepalive broadcaster (ping-only, no fake alerts).
   5. Exposes a /health endpoint for load-balancer checks.
 
 Run with:
@@ -23,7 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.api.routes import cameras, alerts, activities, analytics, websocket, ingest, summaries
-from app.api.routes.websocket import mock_event_broadcaster
+from app.api.routes.websocket import ws_keepalive_broadcaster
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -42,29 +42,26 @@ async def lifespan(app: FastAPI):
     Code inside the `async with` block runs at startup.
     Code after `yield` runs at shutdown.
 
-    Here we launch the mock WebSocket broadcaster as a background task.
-    In production this would also initialise the database connection pool.
+    Launches the WebSocket keepalive broadcaster (ping-only, no fake alerts).
+    All real-time events come from the AI pipeline via REST ingest endpoints.
     """
     logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
     logger.info(f"Mock data mode: {settings.USE_MOCK_DATA}")
 
-    # Start background task: fires mock WS events on a schedule (demo mode only)
-    if settings.USE_MOCK_DATA:
-        broadcaster_task = asyncio.create_task(mock_event_broadcaster())
-        logger.info("Mock WebSocket broadcaster started (demo mode).")
-    else:
-        broadcaster_task = None
-        logger.info("Mock WebSocket broadcaster disabled (production mode).")
+    # WebSocket keepalive: sends pings every 30s to keep connections alive.
+    # This task does NOT generate fake alerts — all real-time events come
+    # from the AI pipeline via REST ingest endpoints.
+    keepalive_task = asyncio.create_task(ws_keepalive_broadcaster())
+    logger.info("WebSocket keepalive broadcaster started (ping only).")
 
     yield  # ← Application is running while we're here
 
     # Shutdown: cancel the background task cleanly
-    if broadcaster_task:
-        broadcaster_task.cancel()
-        try:
-            await broadcaster_task
-        except asyncio.CancelledError:
-            pass
+    keepalive_task.cancel()
+    try:
+        await keepalive_task
+    except asyncio.CancelledError:
+        pass
     logger.info("Application shutdown complete.")
 
 

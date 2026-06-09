@@ -1,42 +1,30 @@
 """
 pipeline/frame_processor.py
 ────────────────────────────
-FrameProcessor — the heart of the AI pipeline.
+FrameProcessor — mock pipeline processor for development/testing.
 
-Receives FrameData from the StreamManager and runs analysis on it.
+Receives FrameData from the StreamManager and runs mock analysis on it.
 
-Current mode: MOCK (no real AI)
-  • Collects frames into batches
-  • Every BATCH_SIZE frames → runs mock "AI analysis"
-  • With ALERT_PROBABILITY chance → generates a mock alert
-  • Always posts activity events to backend API
+This processor posts activity events and frame updates only.
+It does NOT generate any alerts — all alerts must come from the real
+AI pipeline (ActivityAnalyzer → RulesEngine → api_client.post_alert).
 
-Future mode: REAL AI  (swap in steps 4-6 in the roadmap)
-  • Step 1: YOLOv8 person detection on each frame
-  • Step 2: DeepSORT tracking across frames
-  • Step 3: Crop individual persons
-  • Step 4: VLM query per person crop (GPT-4V or LLaVA)
-  • Step 5: LLM + rules engine → normal vs anomaly
-  • Step 6: Post real results to backend
-
-The interface stays identical — only the internals change.
-
-┌─────────────────────────────────────────────────────────────────┐
-│                      FrameProcessor                             │
-│                                                                 │
-│  FrameData in                                                   │
-│      │                                                          │
-│      ▼                                                          │
-│  ┌───────────────┐     ┌──────────────────┐                    │
-│  │ Frame buffer  │────▶│  AI Analysis     │                    │
-│  │ (batch)       │     │  (mock / real)   │                    │
-│  └───────────────┘     └────────┬─────────┘                    │
-│                                 │                               │
-│                    ┌────────────┼───────────────┐              │
-│                    ▼            ▼               ▼              │
-│              Post activity  Raise alert    WS broadcast        │
-│              to backend     to backend     (instant)           │
-└─────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────┐
+│                      FrameProcessor                        │
+│                                                            │
+│  FrameData in                                              │
+│      │                                                     │
+│      ▼                                                     │
+│  ┌───────────────┐     ┌──────────────────┐               │
+│  │ Frame buffer  │────▶│  Mock Analysis   │               │
+│  │ (batch)       │     │  (no alerts)      │               │
+│  └───────────────┘     └────────┬─────────┘               │
+│                                 │                          │
+│                    ┌────────────┘                          │
+│                    ▼                                       │
+│              Post activity     WS broadcast                │
+│              to backend        (frame_update)              │
+└────────────────────────────────────────────────────────────┘
 """
 
 import asyncio
@@ -67,14 +55,6 @@ _NORMAL_ACTIVITIES = [
     ("standing",        "Person standing near workstation, reviewing clipboard."),
     ("carrying_object", "Worker carrying a cardboard box towards storage area."),
     ("walking",         "Person moving between aisle sections carrying a scanner."),
-]
-
-_ANOMALY_ACTIVITIES = [
-    ("unauthorized_entry",   "unauthorized_access",   "high",   "Person entered restricted area without badge scan."),
-    ("loitering",            "loitering",             "medium", "Individual standing idle near loading dock for extended period."),
-    ("falling",              "worker_fall",           "high",   "Worker appears to have fallen near shelf rack — stationary for 30+ seconds."),
-    ("walking",              "ppe_violation",         "low",    "Worker detected without safety helmet in mandatory PPE zone."),
-    ("unauthorized_entry",   "suspicious_activity",   "medium", "Person moving suspiciously near high-value storage rack."),
 ]
 
 _PERSON_IDS = [f"P-{i}" for i in range(1001, 1060)]
@@ -154,34 +134,19 @@ class FrameProcessor:
 
     async def _analyse_batch(self, cam_id: str, batch: list[FrameData]) -> None:
         """
-        Mock AI analysis on a batch of frames.
+        Mock analysis on a batch of frames.
 
-        In production this is where you:
-          1. Run YOLOv8 on key frames to get bounding boxes
-          2. Run DeepSORT to assign person IDs
-          3. Crop each person and query VLM
-          4. Pass VLM output to LLM + rules engine
-          5. Post results
-
-        For now we generate plausible fake results.
+        Posts activity events and frame updates only.
+        No alerts are generated — all alerts must come from the real pipeline
+        (ActivityAnalyzer → RulesEngine → api_client.post_alert).
         """
         logger.debug(f"[{cam_id}] Analysing batch of {len(batch)} frames.")
 
         zone      = _ZONE_MAP.get(cam_id, "general_zone")
         person_id = random.choice(_PERSON_IDS)
 
-        # Decide normal or anomaly
-        is_anomaly = random.random() < settings.ALERT_PROBABILITY
-
-        if is_anomaly:
-            act_type, alert_type, severity, description = random.choice(_ANOMALY_ACTIVITIES)
-            anomaly_label = "anomaly"
-        else:
-            act_type, description = random.choice(_NORMAL_ACTIVITIES)
-            alert_type  = None
-            severity    = None
-            anomaly_label = "normal"
-
+        act_type, description = random.choice(_NORMAL_ACTIVITIES)
+        anomaly_label = "normal"
         dwell_seconds = random.randint(5, 300)
         confidence    = round(random.uniform(0.72, 0.98), 2)
 
@@ -197,24 +162,7 @@ class FrameProcessor:
             confidence=    confidence,
         )
 
-        # ── 2. Post alert (anomalies only) ────────────────────────────────────
-        if is_anomaly and alert_type:
-            # Use the middle frame of the batch as the "snapshot"
-            mid_frame = batch[len(batch) // 2].frame
-            snapshot  = self._frame_to_base64(mid_frame)
-
-            await self._api.post_alert(
-                camera_id=   cam_id,
-                zone=        zone,
-                alert_type=  alert_type,
-                severity=    severity,
-                description= description,
-                person_id=   person_id,
-                confidence=  confidence,
-                snapshot_b64=snapshot,
-            )
-
-        # ── 3/4. Annotate a representative frame for MJPEG streaming and
+        # ── 2. Annotate a representative frame for MJPEG streaming and
         #       broadcast an enriched frame_update (includes bbox/center)
         #       so the frontend overlay can render tracked positions.
         try:

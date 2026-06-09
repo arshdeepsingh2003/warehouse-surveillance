@@ -35,16 +35,19 @@ router = APIRouter(tags=["Ingest (AI Service)"])
 # ── Schemas ───────────────────────────────────────────────────────────────────
 
 class ActivityIngest(BaseModel):
-    id:            str
-    person_id:     str
-    camera_id:     str
-    zone:          str
-    activity_type: str
-    description:   str
-    anomaly_label: str
-    dwell_seconds: int
-    confidence:    float
-    timestamp:     str
+    id:               str
+    person_id:        str
+    camera_id:        str
+    zone:             str
+    activity_type:    str
+    description:      str
+    anomaly_label:    str
+    dwell_seconds:    int
+    confidence:       float
+    timestamp:        str
+    objects_detected: list[str] = []
+    backend_used:     str       = ""
+    latency_ms:       int       = 0
 
 
 class AlertIngest(BaseModel):
@@ -60,6 +63,7 @@ class AlertIngest(BaseModel):
     triggered_at: str
     snapshot_b64: Optional[str] = None   # base64 JPEG — store or forward
     snapshot_url: Optional[str] = None
+    source:       str = "other"          # alerts来源: rules_engine | activity_analyzer | manual_test | other
 
 
 class BroadcastEvent(BaseModel):
@@ -94,14 +98,19 @@ async def ingest_activity(data: ActivityIngest):
 
     # Broadcast to dashboard (Activity Log page live updates)
     await ws_manager.broadcast({
-        "type":        "activity_update",
-        "activity_id": data.id,
-        "person_id":   data.person_id,
-        "camera_id":   data.camera_id,
-        "zone":        data.zone,
-        "activity":    data.activity_type,
-        "label":       data.anomaly_label,
-        "timestamp":   data.timestamp,
+        "type":             "activity_update",
+        "activity_id":      data.id,
+        "person_id":        data.person_id,
+        "camera_id":        data.camera_id,
+        "zone":             data.zone,
+        "activity":         data.activity_type,
+        "label":            data.anomaly_label,
+        "description":      data.description,
+        "confidence":       data.confidence,
+        "objects_detected": data.objects_detected,
+        "backend_used":     data.backend_used,
+        "latency_ms":       data.latency_ms,
+        "timestamp":        data.timestamp,
     })
 
     return {"status": "ok", "id": data.id}
@@ -128,7 +137,14 @@ async def ingest_alert(data: AlertIngest):
         "triggered_at": data.triggered_at,
         "resolved_at":  None,
         "resolved_by":  None,
+        "source":       data.source,
     }
+
+    logger.info(
+        f"🚨 ALERT INGESTED | id={data.id} type={data.alert_type} "
+        f"severity={data.severity} camera={data.camera_id} zone={data.zone} "
+        f"source={data.source} confidence={data.confidence}"
+    )
 
     MOCK_ALERTS.insert(0, record)
     if len(MOCK_ALERTS) > 200:
@@ -147,6 +163,7 @@ async def ingest_alert(data: AlertIngest):
         "confidence":  data.confidence,
         "snapshot_url": data.snapshot_url,
         "timestamp":   data.triggered_at,
+        "source":      data.source,
     })
 
     return {"status": "ok", "id": data.id}

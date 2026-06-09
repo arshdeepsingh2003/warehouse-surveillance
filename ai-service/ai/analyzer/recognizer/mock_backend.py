@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import random
 from typing import Optional
 
 import numpy as np
@@ -13,40 +12,25 @@ from ai.tracker.person_tracker import TrackedPerson
 
 logger = logging.getLogger(__name__)
 
-_RANDOM_ACTIVITIES = [
-    ("walking", "normal",
-     "Person walking through the zone at normal pace."),
-    ("handling_items", "normal",
-     "Worker handling inventory boxes at shelf rack."),
-    ("standing", "normal",
-     "Person standing near workstation, reviewing clipboard."),
-    ("carrying_object", "normal",
-     "Worker carrying a cardboard box towards storage area."),
-    ("walking", "normal",
-     "Person moving between aisle sections carrying a scanner."),
-    ("loitering", "anomaly",
-     "Individual standing idle near loading dock for extended period."),
-    ("running", "anomaly",
-     "Person running in warehouse — prohibited activity."),
-    ("falling", "anomaly",
-     "Worker appears to have fallen near shelf rack."),
-]
-
 
 class MockBackend(BaseActivityBackend):
     """
-    Mock activity recognition backend for demo / testing.
+    Legacy mock backend — no longer generates random activities.
 
-    Assigns random activities to each tracked person.
-    Useful for UI development and demonstrations without real AI.
+    Logs a deprecation warning and returns a deterministic "unknown"
+    activity label for every tracked person. Use RulesBackend (the
+    default) for real activity detection from movement patterns.
 
-    This preserves the original demo behaviour while still using
-    the recognizer abstraction.
+    This class exists only to avoid breaking existing configurations
+    that explicitly set ACTIVITY_BACKEND=mock.
     """
 
     def __init__(self, camera_id: str) -> None:
         self._camera_id = camera_id
-        logger.info(f"[{camera_id}] MockBackend initialised (demo mode)")
+        logger.warning(
+            f"[{camera_id}] MockBackend is deprecated — no activity "
+            "classification performed. Set ACTIVITY_BACKEND=rules."
+        )
 
     async def analyze(
         self,
@@ -57,14 +41,16 @@ class MockBackend(BaseActivityBackend):
     ) -> list[ActivityResult]:
         results: list[ActivityResult] = []
         for person in persons:
-            act_type, anomaly_label, description = random.choice(_RANDOM_ACTIVITIES)
             results.append(ActivityResult(
                 person_id=person.person_id,
                 track_id=person.track_id,
-                activity_type=act_type,
-                anomaly_label=anomaly_label,
-                description=description,
-                confidence=round(random.uniform(0.70, 0.95), 2),
+                activity_type="unknown",
+                anomaly_label="normal",
+                description=(
+                    f"{person.person_id} in '{person.zone_name}' "
+                    f"(mock — no classification)."
+                ),
+                confidence=0.01,
                 flags=[],
                 zone_id=person.zone_id,
                 zone_name=person.zone_name,

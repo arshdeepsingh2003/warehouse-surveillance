@@ -8,7 +8,8 @@ import { useAlertStore } from '../store/alertStore'
 import { useCameraStore } from '../store/cameraStore'
 import { useTrackingStore } from '../store/trackingStore'
 import { useIntelligenceStore } from '../store/intelligenceStore'
-import type { WSEvent } from '../types'
+import { useVLMStore } from '../store/vlmStore'
+import type { VLMInsight, WSEvent } from '../types'
 
 export function useWebSocket() {
   const ws = useRef<WebSocket | null>(null)
@@ -19,6 +20,7 @@ export function useWebSocket() {
   const setZoneSummary  = useIntelligenceStore(s => s.setZoneSummary)
   const setShiftReport  = useIntelligenceStore(s => s.setShiftReport)
   const addExplanation  = useIntelligenceStore(s => s.addExplanation)
+  const addVLMInsight   = useVLMStore(s => s.addInsight)
 
   const connect = useCallback(() => {
     if (ws.current?.readyState === WebSocket.OPEN) return
@@ -89,6 +91,26 @@ export function useWebSocket() {
             }
             break
 
+          case 'activity_update':
+            if (data.activity_id && data.person_id) {
+              const insight: VLMInsight = {
+                id:               data.activity_id,
+                person_id:        data.person_id,
+                camera_id:        data.camera_id ?? '',
+                zone:             data.zone ?? '',
+                activity:         data.activity ?? '',
+                label:            data.label ?? 'normal',
+                description:      data.description ?? '',
+                confidence:       data.confidence ?? 0,
+                objects_detected: data.objects_detected ?? [],
+                backend_used:     data.backend_used ?? '',
+                latency_ms:       data.latency_ms ?? 0,
+                timestamp:        data.timestamp,
+              }
+              addVLMInsight(insight)
+            }
+            break
+
           case 'anomaly_explanation':
           case 'alert_explanation':
             if (data.payload) {
@@ -114,7 +136,7 @@ export function useWebSocket() {
     ws.current.onerror = () => {
       ws.current?.close()
     }
-  }, [addLiveAlert, updateCamStatus, updateTracking, setZoneSummary, setShiftReport, addExplanation])
+  }, [addLiveAlert, updateCamStatus, updateTracking, setZoneSummary, setShiftReport, addExplanation, addVLMInsight])
 
   useEffect(() => {
     connect()

@@ -283,6 +283,7 @@ class VLMFrameProcessor:
                 person_id=   alert.person_id,
                 confidence=  alert.confidence,
                 snapshot_b64=self._frame_to_b64(frame),
+                source=      "rules_engine",
             )
             self._summarizer.log_alert(alert.to_dict())
 

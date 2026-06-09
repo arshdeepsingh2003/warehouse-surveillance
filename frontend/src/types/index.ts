@@ -54,16 +54,35 @@ export type ActivityType  = 'walking' | 'standing' | 'carrying_object' | 'loiter
 export type AnomalyLabel  = 'normal' | 'anomaly'
 
 export interface Activity {
-  id:            string
-  person_id:     string
-  camera_id:     string
-  zone:          string
-  activity_type: ActivityType
-  description:   string
-  anomaly_label: AnomalyLabel
-  dwell_seconds: number
-  confidence:    number
-  timestamp:     string
+  id:              string
+  person_id:       string
+  camera_id:       string
+  zone:            string
+  activity_type:   ActivityType
+  description:     string
+  anomaly_label:   AnomalyLabel
+  dwell_seconds:   number
+  confidence:      number
+  timestamp:       string
+  objects_detected: string[]
+  backend_used:    string
+  latency_ms:      number
+}
+
+// ── VLM Insights ──────────────────────────────────────────────────────────────
+export interface VLMInsight {
+  id:               string
+  person_id:        string
+  camera_id:        string
+  zone:             string
+  activity:         string          // activity_type from WS
+  label:            string          // anomaly_label from WS
+  description:      string
+  confidence:       number
+  objects_detected: string[]
+  backend_used:     string
+  latency_ms:       number
+  timestamp:        string
 }
 
 export interface PersonTimelineEntry {
@@ -105,7 +124,8 @@ export interface AnalyticsSummary {
 
 // ── WebSocket events ──────────────────────────────────────────────────────────
 export type WSEventType = 'connected' | 'alert_triggered' | 'alert_resolved' |
-                          'frame_update' | 'camera_status' | 'ping'
+                          'frame_update' | 'camera_status' | 'ping' |
+                          'activity_update'
 
 export interface WSFramePerson {
   person_id:     string
@@ -139,4 +159,12 @@ export interface WSEvent {
   latency_ms?: number
   // connected
   message?:    string
+  // activity_update / vlm fields
+  activity_id?:   string
+  activity?:      string
+  label?:         string
+  objects_detected?: string[]
+  backend_used?:  string
+  // generic payload passthrough
+  payload?:      unknown
 }

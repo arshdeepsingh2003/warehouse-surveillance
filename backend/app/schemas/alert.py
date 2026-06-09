@@ -64,6 +64,7 @@ class AlertOut(AlertBase):
     triggered_at:   datetime
     resolved_at:    Optional[datetime] = None
     resolved_by:    Optional[str]      = None   # Email or username of resolving operator
+    source:         str = "other"              # rules_engine | activity_analyzer | manual_test | other
 
     model_config = {"from_attributes": True}
 
