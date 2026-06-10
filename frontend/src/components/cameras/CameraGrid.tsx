@@ -4,7 +4,7 @@
 // YOLO boxes drawn by Python). The SVG overlay layer adds interactive
 // React elements (person badges, zone info, alert indicators).
 
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Maximize2, WifiOff, Wifi, AlertTriangle, X } from 'lucide-react'
 import { api } from '../../api/client'
@@ -12,6 +12,7 @@ import { useCameraStore } from '../../store/cameraStore'
 import { useAlertStore } from '../../store/alertStore'
 import { useTrackingStore } from '../../store/trackingStore'
 import { BoundingBoxOverlay } from './BoundingBoxOverlay'
+import { PersonDetailPanel } from './PersonDetailPanel'
 import { ErrorBoundary } from '../common/ErrorBoundary'
 import type { Camera } from '../../types'
 
@@ -26,9 +27,10 @@ interface CardProps {
   camera:   Camera
   onExpand: () => void
   expanded: boolean
+  onPersonClick?: (personId: string) => void
 }
 
-function CameraCard({ camera, onExpand, expanded }: CardProps) {
+function CameraCard({ camera, onExpand, expanded, onPersonClick }: CardProps) {
   const online   = camera.status === 'online'
   const [imgErr, setImgErr]   = useState(false)
   const [loading, setLoading] = useState(true)
@@ -71,7 +73,7 @@ function CameraCard({ camera, onExpand, expanded }: CardProps) {
 
             {/* SVG overlay layer (interactive) — draws boxes from WS events */}
             {!loading && (
-              <BoundingBoxOverlay cameraId={camera.id} persons={persons} />
+              <BoundingBoxOverlay cameraId={camera.id} persons={persons} onPersonClick={onPersonClick} />
             )}
 
             {/* Loading spinner */}
@@ -179,10 +181,20 @@ function CameraCard({ camera, onExpand, expanded }: CardProps) {
 
 // ── Grid layout ───────────────────────────────────────────────────────────────
 
+interface SelectedPerson {
+  personId: string
+  cameraId: string
+}
+
 export function CameraGrid() {
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [layout, setLayout]         = useState<GridLayout>('2x3')
+  const [selectedPerson, setSelectedPerson] = useState<SelectedPerson | null>(null)
   const { cameras: stored, setCameras } = useCameraStore()
+
+  const handlePersonClick = useCallback((cameraId: string, personId: string) => {
+    setSelectedPerson({ cameraId, personId })
+  }, [])
 
   const { data: cameras, isLoading } = useQuery({
     queryKey: ['cameras'],
@@ -241,7 +253,8 @@ export function CameraGrid() {
           <ErrorBoundary key={cam.id}>
             <CameraCard camera={cam}
               expanded={expandedId === cam.id}
-              onExpand={() => setExpandedId(expandedId === cam.id ? null : cam.id)} />
+              onExpand={() => setExpandedId(expandedId === cam.id ? null : cam.id)}
+              onPersonClick={(personId) => handlePersonClick(cam.id, personId)} />
           </ErrorBoundary>
         ))}
       </div>
@@ -249,6 +262,14 @@ export function CameraGrid() {
       <p className="text-[11px] text-text-muted text-center">
         AI-annotated streams at <code className="font-mono text-accent-cyan/70">{STREAM_BASE}/stream/cam-0N</code>
       </p>
+
+      {selectedPerson && (
+        <PersonDetailPanel
+          personId={selectedPerson.personId}
+          cameraId={selectedPerson.cameraId}
+          onClose={() => setSelectedPerson(null)}
+        />
+      )}
     </div>
   )
 }

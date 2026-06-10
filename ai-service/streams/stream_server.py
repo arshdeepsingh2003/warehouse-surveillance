@@ -116,6 +116,28 @@ def create_stream_app(processor) -> FastAPI:
             return Response(status_code=404, content=f"No frames yet for {camera_id}")
         return Response(content=jpeg, media_type="image/jpeg")
 
+    @app.get(
+        "/crop/{camera_id}/{person_id}",
+        responses={200: {"content": {"image/jpeg": {}}}, 404: {"description": "Crop not found"}},
+        summary="Latest person crop image",
+        description="Returns the most recent crop image for a tracked person.",
+    )
+    async def person_crop(camera_id: str, person_id: str):
+        if not _processor:
+            return Response(status_code=503)
+        pipeline = _processor._pipelines.get(camera_id)
+        if not pipeline:
+            return Response(status_code=404, content=f"No pipeline for {camera_id}")
+        crop_path = pipeline.crop_mgr.get_crop_path(person_id)
+        if not crop_path or not os.path.isfile(crop_path):
+            return Response(status_code=404, content=f"No crop for {person_id}")
+        try:
+            with open(crop_path, "rb") as f:
+                data = f.read()
+            return Response(content=data, media_type="image/jpeg")
+        except OSError:
+            return Response(status_code=500, content="Failed to read crop")
+
     return app
 
 
