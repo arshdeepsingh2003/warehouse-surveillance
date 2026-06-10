@@ -22,7 +22,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
-from app.api.routes import cameras, alerts, activities, analytics, websocket, ingest, summaries
+from app.api.routes import cameras, alerts, activities, analytics, websocket, ingest, summaries, vlm_insights
 from app.api.routes.websocket import ws_keepalive_broadcaster
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -106,7 +106,8 @@ app.include_router(activities.router, prefix=API_PREFIX)  # /api/v1/activities
 app.include_router(analytics.router,  prefix=API_PREFIX)  # /api/v1/analytics
 app.include_router(websocket.router)                       # /ws  (no prefix — WS standard)
 app.include_router(ingest.router,     prefix=API_PREFIX)  # /api/v1/ ingest from AI service
-app.include_router(summaries.router,  prefix=API_PREFIX)  # /api/v1/summaries (VLM/LLM)
+app.include_router(summaries.router,   prefix=API_PREFIX)  # /api/v1/summaries (VLM/LLM)
+app.include_router(vlm_insights.router, prefix=API_PREFIX)  # /api/v1/vlm-insights
 
 
 # ── Health check ──────────────────────────────────────────────────────────────

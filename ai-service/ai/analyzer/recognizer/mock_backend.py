@@ -55,5 +55,6 @@ class MockBackend(BaseActivityBackend):
                 zone_id=person.zone_id,
                 zone_name=person.zone_name,
                 dwell_time=person.dwell_time,
+                backend_used="mock",
             ))
         return results

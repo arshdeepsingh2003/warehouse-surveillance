@@ -199,6 +199,46 @@ class APIClient:
         }
         await self._post("/api/v1/events/broadcast", payload)
 
+    # ── VLM insight logging ──────────────────────────────────────────────────
+
+    async def post_vlm_insight(
+        self,
+        camera_id:        str,
+        zone:             str,
+        person_id:        str,
+        activity_type:    str,
+        description:      str,
+        anomaly_label:    str,
+        confidence:       float,
+        objects_detected: list | None = None,
+        backend_used:     str = "",
+        latency_ms:       int = 0,
+        source:           str = "vlm",
+    ) -> None:
+        """
+        POST a new VLM insight to /api/v1/vlm-insights/ingest.
+
+        VLM insights are stored separately from Activity records to avoid
+        duplication and overwriting issues. The AI Insights page reads from
+        this endpoint; the Activity Log page reads from /activities/ingest.
+        """
+        payload = {
+            "id":               str(uuid.uuid4()),
+            "person_id":        person_id,
+            "camera_id":        camera_id,
+            "zone":             zone,
+            "activity_type":    activity_type,
+            "description":      description,
+            "anomaly_label":    anomaly_label,
+            "confidence":       confidence,
+            "objects_detected": objects_detected or [],
+            "backend_used":     backend_used,
+            "latency_ms":       latency_ms,
+            "source":           source,
+            "timestamp":        datetime.now(timezone.utc).isoformat(),
+        }
+        await self._post("/api/v1/vlm-insights/ingest", payload)
+
     # ── Internal HTTP helpers ─────────────────────────────────────────────────
 
     async def _post(self, path: str, payload: dict) -> None:

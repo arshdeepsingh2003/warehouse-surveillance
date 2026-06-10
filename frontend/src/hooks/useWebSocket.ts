@@ -92,22 +92,28 @@ export function useWebSocket() {
             break
 
           case 'activity_update':
-            if (data.activity_id && data.person_id) {
-              const insight: VLMInsight = {
-                id:               data.activity_id,
+            // Activity records are now consumed by the Activity Log page
+            // via REST API polling. VLM insights go through 'vlm_insight' events.
+            break
+
+          case 'vlm_insight':
+            if (data.person_id) {
+              const vlmInsight: VLMInsight = {
+                id:               data.insight_id ?? `vlm-${data.person_id}-${data.timestamp}-${Date.now()}`,
                 person_id:        data.person_id,
                 camera_id:        data.camera_id ?? '',
                 zone:             data.zone ?? '',
-                activity:         data.activity ?? '',
-                label:            data.label ?? 'normal',
+                activity_type:    data.activity_type ?? '',
+                anomaly_label:    data.anomaly_label ?? 'normal',
                 description:      data.description ?? '',
                 confidence:       data.confidence ?? 0,
                 objects_detected: data.objects_detected ?? [],
-                backend_used:     data.backend_used ?? '',
+                backend_used:     data.backend_used ?? 'moondream',
                 latency_ms:       data.latency_ms ?? 0,
+                source:           data.source ?? 'vlm',
                 timestamp:        data.timestamp,
               }
-              addVLMInsight(insight)
+              addVLMInsight(vlmInsight)
             }
             break
 

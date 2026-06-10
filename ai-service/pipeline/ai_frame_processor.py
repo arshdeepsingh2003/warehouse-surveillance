@@ -288,14 +288,17 @@ class AIFrameProcessor:
         # Activity logs (one per tracked person)
         for activity in activities:
             await self._api.post_activity(
-                camera_id=     cam_id,
-                zone=          activity.zone_id,
-                person_id=     activity.person_id,
-                activity_type= activity.activity_type,
-                description=   activity.description,
-                anomaly_label= activity.anomaly_label,
-                dwell_seconds= int(activity.dwell_time),
-                confidence=    activity.confidence,
+                camera_id=       cam_id,
+                zone=            activity.zone_id,
+                person_id=       activity.person_id,
+                activity_type=   activity.activity_type,
+                description=     activity.description,
+                anomaly_label=   activity.anomaly_label,
+                dwell_seconds=   int(activity.dwell_time),
+                confidence=      activity.confidence,
+                objects_detected=[],
+                backend_used=    activity.backend_used,
+                latency_ms=      0,
             )
 
         # Alerts (only anomalies)
@@ -640,7 +643,7 @@ class VLMAIFrameProcessor(AIFrameProcessor):
                 self._post_results_with_vlm(cam_id, persons, activities, alerts, annotated)
             )
 
-    # ── VLM batch analysis ────────────────────────────────────────────────────
+        # ── VLM batch analysis ────────────────────────────────────────────────────
 
     async def _run_vlm_batch(
         self,
@@ -715,6 +718,21 @@ class VLMAIFrameProcessor(AIFrameProcessor):
                 "objects_detected": getattr(result, "objects_detected", []),
             }
 
+            # ── Persist VLM insight to dedicated endpoint ───────────────
+            await self._api.post_vlm_insight(
+                camera_id=        cam_id,
+                zone=             person.zone_id,
+                person_id=        result.person_id,
+                activity_type=    result.activity_type,
+                description=      result.description,
+                anomaly_label=    result.anomaly_label,
+                confidence=       result.confidence,
+                objects_detected= getattr(result, "objects_detected", []),
+                backend_used=     result.backend_used,
+                latency_ms=       result.latency_ms,
+                source=           "vlm",
+            )
+
             logger.info(
                 f"[VLM] [{cam_id}] {person.person_id} → "
                 f"{'⚠ ANOMALY' if result.is_anomaly else 'normal'} | "
@@ -732,46 +750,32 @@ class VLMAIFrameProcessor(AIFrameProcessor):
         frame:      np.ndarray,
     ) -> None:
         """
-        Post activities enriched with VLM descriptions.
-        Falls back to rule-based description when VLM cache is empty.
+        Post rule-based activities to the Activity Log endpoint.
+        VLM insights are persisted separately in _run_vlm_batch.
         """
         for activity in activities:
-            # Hybrid: prefer VLM description if available
-            vlm_data   = self._vlm_cache.get(activity.person_id, {})
-            description = vlm_data.get("description") or activity.description
-            act_type    = vlm_data.get("activity_type") or activity.activity_type
-            confidence  = vlm_data.get("confidence",  activity.confidence)
-
-            # Hybrid anomaly decision: anomaly if EITHER rule-based OR VLM says so
-            anomaly = activity.anomaly_label
-            if vlm_data.get("anomaly_label") == "anomaly":
-                anomaly = "anomaly"
-
-            objects_detected = vlm_data.get("objects_detected", [])
-            backend_used     = vlm_data.get("backend_used", "")
-            latency_ms       = vlm_data.get("latency_ms", 0)
-
+            # Post rule-based (non-VLM) activity to Activity Log
             await self._api.post_activity(
                 camera_id=       cam_id,
                 zone=            activity.zone_id,
                 person_id=       activity.person_id,
-                activity_type=   act_type,
-                description=     description,
-                anomaly_label=   anomaly,
+                activity_type=   activity.activity_type,
+                description=     activity.description,
+                anomaly_label=   activity.anomaly_label,
                 dwell_seconds=   int(activity.dwell_time),
-                confidence=      confidence,
-                objects_detected=objects_detected,
-                backend_used=    backend_used,
-                latency_ms=      latency_ms,
+                confidence=      activity.confidence,
+                objects_detected=[],
+                backend_used=    activity.backend_used,
+                latency_ms=      0,
             )
 
             # Feed ZoneSummarizer buffer
             self._summarizer.log_activity({
                 "person_id":     activity.person_id,
                 "zone":          activity.zone_id,
-                "activity_type": act_type,
-                "description":   description,
-                "anomaly_label": anomaly,
+                "activity_type": activity.activity_type,
+                "description":   activity.description,
+                "anomaly_label": activity.anomaly_label,
                 "dwell_time":    activity.dwell_time,
             })
 

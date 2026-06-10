@@ -15,7 +15,7 @@ import { BoundingBoxOverlay } from './BoundingBoxOverlay'
 import { ErrorBoundary } from '../common/ErrorBoundary'
 import type { Camera } from '../../types'
 
-const STREAM_BASE = (import.meta as any).env?.VITE_STREAM_URL ?? 'http://localhost:8001'
+const STREAM_BASE = (import.meta as any).env?.VITE_STREAM_URL ?? 'http://localhost:8002'
 
 type GridLayout = '1x1' | '2x2' | '2x3'
 const LAYOUT_COLS: Record<GridLayout, number> = { '1x1': 1, '2x2': 2, '2x3': 3 }

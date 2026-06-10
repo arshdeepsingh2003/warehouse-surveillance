@@ -75,9 +75,42 @@ export interface VLMInsight {
   person_id:        string
   camera_id:        string
   zone:             string
-  activity:         string          // activity_type from WS
-  label:            string          // anomaly_label from WS
+  activity_type:    string
+  anomaly_label:    string
   description:      string
+  confidence:       number
+  objects_detected: string[]
+  backend_used:     string
+  latency_ms:       number
+  source:           string    // "vlm" | "hybrid"
+  timestamp:        string
+}
+
+export interface VLMInsightEvent {
+  type:             'vlm_insight'
+  insight_id:       string
+  person_id:        string
+  camera_id:        string
+  zone:             string
+  activity_type:    string
+  anomaly_label:    string
+  description:      string
+  confidence:       number
+  objects_detected: string[]
+  backend_used:     string
+  latency_ms:       number
+  source:           string
+  timestamp:        string
+}
+
+export interface WSVLMInsightEvent {
+  type:             'vlm_insight'
+  person_id:        string
+  camera_id:        string
+  zone:             string
+  description:      string
+  activity_type:    string
+  anomaly_label:    string
   confidence:       number
   objects_detected: string[]
   backend_used:     string
@@ -125,7 +158,7 @@ export interface AnalyticsSummary {
 // ── WebSocket events ──────────────────────────────────────────────────────────
 export type WSEventType = 'connected' | 'alert_triggered' | 'alert_resolved' |
                           'frame_update' | 'camera_status' | 'ping' |
-                          'activity_update'
+                          'activity_update' | 'vlm_insight'
 
 export interface WSFramePerson {
   person_id:     string
@@ -159,10 +192,16 @@ export interface WSEvent {
   latency_ms?: number
   // connected
   message?:    string
-  // activity_update / vlm fields
+  // activity_update fields
   activity_id?:   string
   activity?:      string
   label?:         string
+  // vlm_insight fields
+  insight_id?:    string
+  activity_type?: string
+  anomaly_label?: string
+  source?:        string
+  // shared
   objects_detected?: string[]
   backend_used?:  string
   // generic payload passthrough

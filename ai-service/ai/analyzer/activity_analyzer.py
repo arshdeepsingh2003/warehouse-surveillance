@@ -86,6 +86,7 @@ class ActivityResult:
     zone_id:       str    = ""
     zone_name:     str    = ""
     dwell_time:    float  = 0.0
+    backend_used:  str    = "rules"
 
     @property
     def is_anomaly(self) -> bool:

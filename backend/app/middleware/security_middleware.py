@@ -122,8 +122,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # CSP: restrict sources to self + our stream service
         "Content-Security-Policy": (
             "default-src 'self'; "
-            "img-src 'self' data: http://localhost:8001 blob:; "
-            "connect-src 'self' ws://localhost:8000 http://localhost:8001; "
+            "img-src 'self' data: http://localhost:8002 blob:; "
+            "connect-src 'self' ws://localhost:8000 http://localhost:8002; "
             "script-src 'self' 'unsafe-inline'; "  # relaxed for dev — tighten in prod
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
             "font-src 'self' https://fonts.gstatic.com;"

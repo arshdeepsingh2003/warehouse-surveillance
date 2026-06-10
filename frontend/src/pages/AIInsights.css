@@ -1,5 +1,5 @@
 /* pages/AIInsights.css */
-/* AI Insights panel — VLM activity understanding UI */
+/* AI Insights panel — rule-based + VLM activity understanding UI */
 
 .ai-insights-page {
   display: flex;
@@ -706,4 +706,146 @@
 .insight-drawer-body::-webkit-scrollbar-thumb {
   background: var(--surface-500);
   border-radius: 2px;
+}
+
+/* ── Backend badges ─────────────────────────────────────────────────────────── */
+
+.backend-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid;
+  white-space: nowrap;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+
+.backend-badge-rules {
+  background: rgba(99, 102, 241, 0.15);
+  color: #818cf8;
+  border-color: rgba(99, 102, 241, 0.3);
+}
+
+.backend-badge-moondream {
+  background: rgba(52, 211, 153, 0.15);
+  color: #34d399;
+  border-color: rgba(52, 211, 153, 0.3);
+}
+
+.backend-badge-qwen {
+  background: rgba(251, 191, 36, 0.15);
+  color: #fbbf24;
+  border-color: rgba(251, 191, 36, 0.3);
+}
+
+.backend-badge-mock {
+  background: rgba(148, 163, 184, 0.15);
+  color: #94a3b8;
+  border-color: rgba(148, 163, 184, 0.3);
+}
+
+.backend-badge-pending {
+  background: rgba(251, 191, 36, 0.1);
+  color: #fbbf24;
+  border-color: rgba(251, 191, 36, 0.2);
+  animation: pulse 1.5s infinite;
+}
+
+.backend-badge-unknown {
+  background: rgba(148, 163, 184, 0.1);
+  color: #94a3b8;
+  border-color: rgba(148, 163, 184, 0.2);
+}
+
+/* ── Insight sections ───────────────────────────────────────────────────────── */
+
+.insight-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.insight-section-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--surface-600);
+}
+
+.insight-section-icon {
+  flex-shrink: 0;
+}
+
+.insight-section-icon.vlm-icon {
+  color: #34d399;
+}
+
+.insight-section-icon.rule-icon {
+  color: #818cf8;
+}
+
+.insight-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.insight-section-count {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  background: var(--surface-600);
+  padding: 0 6px;
+  border-radius: 8px;
+  line-height: 18px;
+}
+
+/* ── Pending VLM cards ──────────────────────────────────────────────────────── */
+
+.insight-card-pending {
+  border-left: 3px solid var(--accent-amber) !important;
+  opacity: 0.7;
+  cursor: default;
+  pointer-events: none;
+}
+
+.insight-card-pending:hover {
+  border-color: var(--surface-500) !important;
+  background: var(--surface-700) !important;
+}
+
+.severity-dot-pending {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-amber);
+  animation: pulse 1.5s infinite;
+  flex-shrink: 0;
+}
+
+.insight-description-pending {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted) !important;
+  font-style: italic;
+}
+
+.pending-icon {
+  animation: pulse 1.5s infinite;
+  flex-shrink: 0;
+}
+
+.insight-pending-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }

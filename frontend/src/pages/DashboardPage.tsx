@@ -106,7 +106,7 @@ export function DashboardPage() {
       <div className="dashboard-section vlm-stream-section">
         <div className="vlm-stream-header">
           <Sparkles size={14} />
-          <span>Latest VLM Activity (Qwen2.5-VL)</span>
+          <span>Latest VLM Activity</span>
           {recentVLM.length > 0 && (
             <span className="vlm-stream-badge">{vlmInsights.length} insights</span>
           )}
@@ -134,7 +134,7 @@ export function DashboardPage() {
           ) : (
             <div className="vlm-stream-empty">
               <Eye size={18} />
-              <span>Waiting for VLM insights from Qwen2.5-VL…</span>
+              <span>Waiting for VLM insights…</span>
             </div>
           )}
         </div>

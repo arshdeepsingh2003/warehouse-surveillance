@@ -2,7 +2,7 @@
 // Typed API client. All components import from here — never fetch() directly.
 // Change BASE_URL once and everything updates.
 
-import type { Camera, Alert, Activity, PersonTimeline, AnalyticsSummary } from '../types'
+import type { Camera, Alert, Activity, PersonTimeline, AnalyticsSummary, VLMInsight } from '../types'
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000/api/v1'
 export const WS_URL  = import.meta.env.VITE_WS_URL  ?? 'ws://localhost:8000/ws'
@@ -56,6 +56,12 @@ export const api = {
       get<Activity[]>('/activities', params),
     personTimeline: (personId: string) =>
       get<PersonTimeline>(`/activities/persons/${personId}/timeline`),
+  },
+
+  // ── VLM Insights ────────────────────────────────────────────────────────────
+  vlmInsights: {
+    list: (params?: { camera_id?: string; zone?: string; person_id?: string; anomaly_only?: boolean; limit?: number }) =>
+      get<VLMInsight[]>('/vlm-insights', params),
   },
 
   // ── Analytics ────────────────────────────────────────────────────────────────

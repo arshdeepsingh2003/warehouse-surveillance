@@ -88,6 +88,9 @@ class Settings(BaseSettings):
     OLLAMA_HOST:    str = "http://localhost:11434"
     QWEN_VL_MODEL:  str = "qwen2.5-vl"
 
+    # ── Moondream (via Ollama — CPU-friendly VLM) ────────────────────────────
+    MOONDREAM_MODEL: str = "moondream"
+
     # ── YOLO Model ──────────────────────────────────────────────────────────────
     YOLO_MODEL_PATH:   str = "./models/yolov8s.pt"
     YOLO_CONFIDENCE:   float = 0.25

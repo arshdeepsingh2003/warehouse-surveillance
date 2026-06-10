@@ -1,17 +1,42 @@
 // pages/AIInsightsPage.tsx
-// AI Insights panel — shows real-time VLM activity understanding from Qwen2.5-VL.
+// AI Insights panel — shows VLM-generated insights only.
+// Consumes VLMInsight records (persisted) from the REST API,
+// with real-time updates via WebSocket.
 
-import { useState, useMemo } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useState, useMemo, useEffect } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Eye, User, Camera, Clock, Cpu, Layers, AlertTriangle,
-  ChevronRight, X, ExternalLink, Sparkles, Zap, Activity as ActivityIcon
+  ChevronRight, X, Sparkles, Zap, Activity as ActivityIcon,
+  Hourglass, BrainCircuit, Bot
 } from 'lucide-react'
 import { api } from '../api/client'
 import { useVLMStore } from '../store/vlmStore'
-import { AnomalyBadge, ConfidenceBar } from '../components/common/SeverityBadge'
-import type { VLMInsight, Activity } from '../types'
+import { ConfidenceBar } from '../components/common/SeverityBadge'
+import type { VLMInsight } from '../types'
 import './AIInsights.css'
+
+// ── Backend badge mapping ─────────────────────────────────────────────────────
+
+const BACKEND_BADGES: Record<string, { label: string; className: string; icon: React.ReactNode }> = {
+  'moondream':{ label: 'Moondream',  className: 'backend-badge-moondream',icon: <BrainCircuit size={12} /> },
+  'qwen_vl':  { label: 'Qwen',       className: 'backend-badge-qwen',     icon: <Bot size={12} /> },
+  'mock':     { label: 'Mock',       className: 'backend-badge-mock',     icon: <Cpu size={12} /> },
+}
+
+function BackendBadge({ backendUsed }: { backendUsed: string }) {
+  const badge = BACKEND_BADGES[backendUsed] ?? {
+    label: backendUsed || 'Unknown',
+    className: 'backend-badge-unknown',
+    icon: <Cpu size={12} />,
+  }
+  return (
+    <span className={`backend-badge ${badge.className}`}>
+      {badge.icon}
+      {badge.label}
+    </span>
+  )
+}
 
 // ── Risk-level badge ──────────────────────────────────────────────────────────
 
@@ -43,8 +68,7 @@ function InsightCard({
 }) {
   const ts = new Date(insight.timestamp)
   const timeStr = ts.toLocaleTimeString()
-  const dateStr = ts.toLocaleDateString()
-  const isAnomaly = insight.label === 'anomaly'
+  const isAnomaly = insight.anomaly_label === 'anomaly'
 
   return (
     <div
@@ -53,20 +77,21 @@ function InsightCard({
     >
       <div className="insight-card-header">
         <div className="insight-card-person">
-          <SeverityIndicator label={insight.label} />
+          <SeverityIndicator label={insight.anomaly_label} />
           <User size={14} />
           <span className="insight-person-id">{insight.person_id}</span>
           <Camera size={12} className="insight-icon-spacer" />
           <span className="insight-camera-id">{insight.camera_id}</span>
+          <BackendBadge backendUsed={insight.backend_used} />
         </div>
-        <RiskBadge label={insight.label} />
+        <RiskBadge label={insight.anomaly_label} />
       </div>
 
       <p className="insight-description">{insight.description}</p>
 
       <div className="insight-meta-row">
         <div className="insight-meta-tags">
-          <span className="insight-activity-tag">{insight.activity}</span>
+          <span className="insight-activity-tag">{insight.activity_type}</span>
           {insight.objects_detected.slice(0, 3).map((obj) => (
             <span key={obj} className="insight-object-tag">{obj}</span>
           ))}
@@ -95,14 +120,12 @@ function InsightCard({
 function InsightDetailDrawer({
   insight,
   onClose,
-  personActivities,
 }: {
   insight: VLMInsight
   onClose: () => void
-  personActivities: Activity[]
 }) {
   const ts = new Date(insight.timestamp)
-  const isAnomaly = insight.label === 'anomaly'
+  const isAnomaly = insight.anomaly_label === 'anomaly'
 
   return (
     <div className="insight-drawer-overlay" onClick={onClose}>
@@ -153,13 +176,13 @@ function InsightDetailDrawer({
               <span className="detail-card-label">Activity Category</span>
               <span className="detail-card-value">
                 <ActivityIcon size={14} />
-                {insight.activity}
+                {insight.activity_type}
               </span>
             </div>
             <div className="detail-card">
               <span className="detail-card-label">Risk Assessment</span>
               <span className="detail-card-value">
-                <RiskBadge label={insight.label} />
+                <RiskBadge label={insight.anomaly_label} />
               </span>
             </div>
             <div className="detail-card">
@@ -169,10 +192,10 @@ function InsightDetailDrawer({
               </span>
             </div>
             <div className="detail-card">
-              <span className="detail-card-label">VLM Backend</span>
+              <span className="detail-card-label">Source</span>
               <span className="detail-card-value detail-backend">
                 <Cpu size={14} />
-                {insight.backend_used || 'Qwen2.5-VL'}
+                <BackendBadge backendUsed={insight.backend_used} />
               </span>
             </div>
           </div>
@@ -209,39 +232,6 @@ function InsightDetailDrawer({
               <span className="detail-perf-value">{ts.toISOString()}</span>
             </div>
           </div>
-
-          {/* Latest crop placeholder */}
-          <div className="detail-section">
-            <h3 className="detail-section-title">Latest Crop</h3>
-            <div className="detail-crop-placeholder">
-              <Eye size={24} />
-              <span>Crop image for {insight.person_id} would appear here</span>
-              <span className="detail-crop-sub">
-                (available at ./crops/{insight.camera_id}/{insight.person_id}_*.jpg)
-              </span>
-            </div>
-          </div>
-
-          {/* Person activity history */}
-          {personActivities.length > 0 && (
-            <div className="detail-section">
-              <h3 className="detail-section-title">Person Timeline</h3>
-              <div className="detail-timeline">
-                {personActivities.slice(0, 5).map((act) => (
-                  <div key={act.id} className="detail-timeline-item">
-                    <div className="detail-timeline-dot" />
-                    <div className="detail-timeline-content">
-                      <span className="detail-timeline-act">{act.activity_type}</span>
-                      <span className="detail-timeline-desc">{act.description.slice(0, 60)}</span>
-                      <span className="detail-timeline-time">
-                        {new Date(act.timestamp).toLocaleTimeString()}
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
       </div>
     </div>
@@ -258,7 +248,7 @@ function RealtimeStream({ insights }: { insights: VLMInsight[] }) {
       <div className="realtime-stream-header">
         <div className="realtime-stream-title">
           <Zap size={14} className="realtime-stream-icon" />
-          <span>Latest VLM Activity</span>
+          <span>Latest VLM Insights</span>
         </div>
         <span className="realtime-stream-count">{insights.length} insights</span>
       </div>
@@ -266,9 +256,10 @@ function RealtimeStream({ insights }: { insights: VLMInsight[] }) {
         {recent.length > 0 ? (
           recent.map((insight) => (
             <div key={insight.id} className="realtime-stream-item">
-              <SeverityIndicator label={insight.label} />
+              <SeverityIndicator label={insight.anomaly_label} />
               <span className="realtime-stream-person">{insight.person_id}</span>
               <span className="realtime-stream-desc">{insight.description.slice(0, 50)}</span>
+              <BackendBadge backendUsed={insight.backend_used} />
               <span className="realtime-stream-time">
                 {new Date(insight.timestamp).toLocaleTimeString()}
               </span>
@@ -277,10 +268,44 @@ function RealtimeStream({ insights }: { insights: VLMInsight[] }) {
         ) : (
           <div className="realtime-stream-empty">
             <Eye size={20} />
-            <span>Waiting for VLM insights from Qwen2.5-VL…</span>
+            <span>Waiting for VLM insights...</span>
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+// ── Section component ─────────────────────────────────────────────────────────
+
+function InsightSection({
+  title,
+  icon,
+  insights,
+  onSelectInsight,
+}: {
+  title: string
+  icon: React.ReactNode
+  insights: VLMInsight[]
+  onSelectInsight: (insight: VLMInsight) => void
+}) {
+  if (insights.length === 0) return null
+
+  return (
+    <div className="insight-section">
+      <div className="insight-section-header">
+        {icon}
+        <span className="insight-section-title">{title}</span>
+        <span className="insight-section-count">{insights.length}</span>
+      </div>
+
+      {insights.map((insight) => (
+        <InsightCard
+          key={insight.id}
+          insight={insight}
+          onClick={() => onSelectInsight(insight)}
+        />
+      ))}
     </div>
   )
 }
@@ -292,34 +317,49 @@ export function AIInsightsPage() {
   const [filterAnomaly, setFilterAnomaly] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
 
-  const insights = useVLMStore((s) => s.insights)
-  const latestByPerson = useVLMStore((s) => s.latestByPerson)
+  // Live WebSocket VLM insights (real-time updates)
+  const liveInsights = useVLMStore((s) => s.vlmInsights)
+  const setInsights = useVLMStore((s) => s.setInsights)
 
-  // Fetch full activities for selected person's timeline
-  const { data: personActivities } = useQuery({
-    queryKey: ['activities', 'person', selectedInsight?.person_id],
-    queryFn: () =>
-      api.activities.list({ person_id: selectedInsight!.person_id, limit: 20 }),
-    enabled: !!selectedInsight,
+  const queryClient = useQueryClient()
+
+  // Fetch persisted VLM insights from API (polling)
+  const { data: apiInsights = [] } = useQuery({
+    queryKey: ['vlm-insights', filterAnomaly],
+    queryFn: () => api.vlmInsights.list({ anomaly_only: filterAnomaly, limit: 100 }),
     refetchInterval: 30_000,
   })
 
+  // Merge API data into store on fetch (so WS updates still layer on top)
+  useEffect(() => {
+    if (apiInsights.length > 0) {
+      setInsights(apiInsights)
+    }
+  }, [apiInsights, setInsights])
+
+  // Use live insights from store (which includes API + WS merged)
+  const allInsights = useVLMStore((s) => s.insights)
+  const vlmInsights = useVLMStore((s) => s.vlmInsights)
+  const latestByPerson = useVLMStore((s) => s.latestByPerson)
+
   // Filter + search
-  const filtered = useMemo(() => {
-    let list = insights
-    if (filterAnomaly) list = list.filter((i) => i.label === 'anomaly')
+  const filteredVlm = useMemo(() => {
+    let list = vlmInsights
+    if (filterAnomaly) list = list.filter((i) => i.anomaly_label === 'anomaly')
     if (searchQuery) {
       const q = searchQuery.toLowerCase()
       list = list.filter(
         (i) =>
           i.person_id.toLowerCase().includes(q) ||
           i.description.toLowerCase().includes(q) ||
-          i.activity.toLowerCase().includes(q) ||
+          i.activity_type.toLowerCase().includes(q) ||
           i.camera_id.toLowerCase().includes(q)
       )
     }
     return list
-  }, [insights, filterAnomaly, searchQuery])
+  }, [vlmInsights, filterAnomaly, searchQuery])
+
+  const hasAnyContent = filteredVlm.length > 0
 
   return (
     <div className="ai-insights-page">
@@ -331,14 +371,14 @@ export function AIInsightsPage() {
             AI Insights
           </h1>
           <span className="ai-insights-subtitle">
-            Real-time VLM activity understanding from Qwen2.5-VL
+            VLM-powered activity understanding
           </span>
         </div>
         <div className="ai-insights-topbar-right">
           <input
             className="ai-insights-search"
             type="text"
-            placeholder="Search person, description, camera…"
+            placeholder="Search person, description, camera..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
           />
@@ -357,8 +397,12 @@ export function AIInsightsPage() {
       {/* Stats bar */}
       <div className="ai-insights-stats">
         <div className="stats-card">
-          <span className="stats-value">{insights.length}</span>
-          <span className="stats-label">Total Insights</span>
+          <span className="stats-value">{allInsights.length}</span>
+          <span className="stats-label">Total VLM Insights</span>
+        </div>
+        <div className="stats-card">
+          <span className="stats-value">{vlmInsights.length}</span>
+          <span className="stats-label">VLM Records</span>
         </div>
         <div className="stats-card">
           <span className="stats-value">
@@ -368,52 +412,39 @@ export function AIInsightsPage() {
         </div>
         <div className="stats-card">
           <span className="stats-value stats-value-anomaly">
-            {insights.filter((i) => i.label === 'anomaly').length}
+            {allInsights.filter((i) => i.anomaly_label === 'anomaly').length}
           </span>
           <span className="stats-label">Suspicious</span>
-        </div>
-        <div className="stats-card">
-          <span className="stats-value">
-            {insights.length > 0
-              ? `${(insights.filter((i) => i.confidence > 0.8).length / insights.length * 100).toFixed(0)}%`
-              : '—'}
-          </span>
-          <span className="stats-label">High Confidence</span>
         </div>
       </div>
 
       {/* Real-time stream */}
-      <RealtimeStream insights={insights} />
+      <RealtimeStream insights={allInsights} />
 
-      {/* Insight cards */}
-      <div className="insight-list">
-        {filtered.length > 0 ? (
-          filtered.map((insight) => (
-            <InsightCard
-              key={insight.id}
-              insight={insight}
-              onClick={() => setSelectedInsight(insight)}
-            />
-          ))
-        ) : (
-          <div className="insight-empty">
-            <Eye size={48} />
-            <h3>No VLM Insights Yet</h3>
-            <p>
-              {insights.length === 0
-                ? 'Waiting for Qwen2.5-VL to analyze person crops. Make sure the AI pipeline is running and persons are detected.'
-                : 'No insights match your current filters.'}
-            </p>
-          </div>
-        )}
-      </div>
+      {/* VLM Insight Section */}
+      <InsightSection
+        title="VLM Insights"
+        icon={<BrainCircuit size={14} className="insight-section-icon vlm-icon" />}
+        insights={filteredVlm}
+        onSelectInsight={setSelectedInsight}
+      />
+
+      {/* Empty state */}
+      {!hasAnyContent && (
+        <div className="insight-empty">
+          <Eye size={48} />
+          <h3>No VLM Insights Yet</h3>
+          <p>
+            Waiting for VLM to analyze person crops. Make sure the AI pipeline is running and persons are detected.
+          </p>
+        </div>
+      )}
 
       {/* Detail drawer */}
       {selectedInsight && (
         <InsightDetailDrawer
           insight={selectedInsight}
           onClose={() => setSelectedInsight(null)}
-          personActivities={personActivities ?? []}
         />
       )}
     </div>

@@ -104,4 +104,5 @@ class GroqBackend(BaseActivityBackend):
             zone_id=person.zone_id,
             zone_name=person.zone_name,
             dwell_time=person.dwell_time,
+            backend_used=vlm.backend_used if vlm.backend_used else "groq",
         )

@@ -6,20 +6,23 @@ Unified VLM (Vision Language Model) client.
 Supports multiple backends through a single interface:
 
   BACKEND          COST      LATENCY   ACCURACY  PRIVACY
-  ─────────────────────────────────────────────────────────
+  ─────────────────────────────────────────────────────────────
   mock             free      0ms       demo      ✅ local
   openai_gpt4v     $$        1-3s      ★★★★★    ☁ cloud
   anthropic_claude $$        1-3s      ★★★★★    ☁ cloud
   ollama_llava     free      2-8s*     ★★★☆☆    ✅ local
   ollama_qwen_vl   free      1-5s*     ★★★★☆    ✅ local
+  moondream        free      5-15s**   ★★☆☆☆    ✅ local
   gemini           $         0.5-2s    ★★★★☆    ☁ cloud
 
   * depends on your hardware — GPU recommended for Ollama
+  ** CPU-only estimate on a modern laptop; ~2-5s on Apple Silicon
 
 Selection guide:
   → Development / demo:    BACKEND=mock
   → Best accuracy:         BACKEND=openai_gpt4v  (needs OPENAI_API_KEY)
   → Privacy / on-premise:  BACKEND=ollama_llava  (install Ollama locally)
+  → CPU-only real-time:    BACKEND=moondream     (tiny 1.9B model)
   → Cost-efficient cloud:  BACKEND=gemini        (needs GEMINI_API_KEY)
 
 Usage:
@@ -52,6 +55,24 @@ import numpy as np
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
+
+# Short backend names for frontend display
+_BACKEND_SHORT_NAMES: dict[str, str] = {
+    "MockVLMBackend":       "mock",
+    "MoondreamVLMBackend":  "moondream",
+    "QwenVLMBackend":       "qwen_vl",
+    "OpenAIVLMBackend":     "openai",
+    "AnthropicVLMBackend":  "anthropic",
+    "OllamaVLMBackend":     "ollama",
+    "GeminiVLMBackend":     "gemini",
+    "GroqVLMBackend":       "groq",
+}
+
+
+def _short_backend_name(backend: object) -> str:
+    """Map a backend class name to the short label used in WS events."""
+    cls_name = type(backend).__name__
+    return _BACKEND_SHORT_NAMES.get(cls_name, cls_name)
 
 
 # ── Output schema ─────────────────────────────────────────────────────────────
@@ -275,7 +296,7 @@ class OllamaVLMBackend(BaseVLMBackend):
             async with self._session.post(
                 f"{self._base_url}/api/generate",
                 json={"model": self._model, "prompt": "hello", "stream": False},
-                timeout=aiohttp.ClientTimeout(total=30),
+                timeout=aiohttp.ClientTimeout(total=60),
             ) as resp:
                 if resp.status == 200:
                     logger.info(f"Ollama model {self._model} warmed up")
@@ -298,7 +319,7 @@ class OllamaVLMBackend(BaseVLMBackend):
                     "stream": False,
                     "options": {"temperature": 0.2, "num_predict": 200},
                 },
-                timeout=aiohttp.ClientTimeout(total=30),
+                timeout=aiohttp.ClientTimeout(total=60),
             ) as resp:
                 data = await resp.json()
                 return data.get("response", "").strip()
@@ -431,6 +452,95 @@ class QwenVLMBackend(BaseVLMBackend):
             return ""
 
 
+# ── Backend 7: Moondream via Ollama (lightweight CPU vision) ─────────────────
+
+_MOONDREAM_VLM_PROMPT = (
+    "Describe what the person is doing in this warehouse image in one short sentence. "
+    "Mention their activity, posture, and any objects visible. "
+    "Is their behavior normal or anomalous?"
+)
+
+
+class MoondreamVLMBackend(BaseVLMBackend):
+    """
+    Moondream 2 (1.9B) via local Ollama — CPU-first lightweight vision model.
+
+    Moondream is a tiny vision-language model (~1.9B params) designed to run
+    on edge devices.  It is the only local VLM that can realistically achieve
+    <10 s inference on CPU-only hardware.
+
+    Requirements:
+        1. Install Ollama: https://ollama.ai
+        2. Pull the model:
+             ollama pull moondream      # ~1.7 GB, Q4 quantized
+        3. Set in .env:
+             VLM_BACKEND=moondream
+             OLLAMA_HOST=http://localhost:11434
+
+    Design notes:
+      • Prompt + output are kept short (moondream has a 2K context window).
+      • num_predict=80 keeps text generation short → faster inference.
+      • Uses the same _parse_response() format as the generic Ollama backend.
+
+    Privacy: 100% local — no data leaves your server
+    Cost:    Free (electricity only)
+    Latency: 5–15 s on modern laptop CPU, 2–5 s on Apple Silicon
+             (substantially faster than Qwen2.5-VL 7B at 180+ s)
+    """
+
+    PROMPT = _MOONDREAM_VLM_PROMPT
+
+    def __init__(
+        self,
+        model:    str = "moondream",
+        base_url: str = "http://localhost:11434",
+    ) -> None:
+        import aiohttp
+        self._model    = model
+        self._base_url = base_url
+        self._session: Optional[aiohttp.ClientSession] = None
+        logger.info(f"Moondream VLM backend: {model} at {base_url}")
+
+    async def warmup(self) -> None:
+        """Pre-load the tiny model into Ollama memory."""
+        import aiohttp
+        self._session = aiohttp.ClientSession()
+        try:
+            async with self._session.post(
+                f"{self._base_url}/api/generate",
+                json={"model": self._model, "prompt": "hello", "stream": False},
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status == 200:
+                    logger.info(f"Moondream model {self._model} warmed up")
+                else:
+                    logger.warning(f"Moondream warmup returned {resp.status}")
+        except Exception as e:
+            logger.warning(f"Moondream not available: {e}")
+
+    async def query(self, image_b64: str, prompt: str) -> str:
+        if not self._session:
+            import aiohttp
+            self._session = aiohttp.ClientSession()
+        try:
+            async with self._session.post(
+                f"{self._base_url}/api/generate",
+                json={
+                    "model":   self._model,
+                    "prompt":  prompt,
+                    "images":  [image_b64],
+                    "stream":  False,
+                    "options": {"temperature": 0.1, "num_predict": 80},
+                },
+                timeout=aiohttp.ClientTimeout(total=60),
+            ) as resp:
+                data = await resp.json()
+                return data.get("response", "").strip()
+        except Exception as e:
+            logger.warning(f"Moondream query failed: {e}")
+            return ""
+
+
 # ── Factory ───────────────────────────────────────────────────────────────────
 
 def _build_backend(name: str) -> BaseVLMBackend:
@@ -461,6 +571,12 @@ def _build_backend(name: str) -> BaseVLMBackend:
         if name == "qwen_vl":
             return QwenVLMBackend(
                 model=    settings.QWEN_VL_MODEL,
+                base_url= settings.OLLAMA_HOST,
+            )
+
+        if name == "moondream":
+            return MoondreamVLMBackend(
+                model=    settings.MOONDREAM_MODEL,
                 base_url= settings.OLLAMA_HOST,
             )
 
@@ -640,7 +756,29 @@ class VLMClient:
         activity    = lines.get("ACTIVITY", "unknown").lower().replace(" ", "_")
         anomaly     = lines.get("ANOMALY",  "normal").lower()
         severity    = lines.get("SEVERITY", "none").lower()
-        description = lines.get("DESCRIPTION", raw[:200])
+        description = lines.get("DESCRIPTION", raw[:500])
+
+        # If no structured fields were found, try keyword classification
+        # from free-form text (needed for Moondream which can't do colon format)
+        if not lines and raw:
+            text_lower = raw.lower()
+            activity_keywords = {
+                "walking":    ("walk", "walking", "walked"),
+                "standing":   ("stand", "standing", "stationary"),
+                "carrying":   ("carry", "carrying", "hold", "holding", "transport"),
+                "handling_items": ("pick", "handling", "scan", "sort", "pack", "unpack",
+                                   "picking", "placing", "arranging", "stacking"),
+                "loitering":  ("loiter", "idle", "waiting", "unoccupied"),
+                "crouching":  ("crouch", "bend", "bending", "kneel", "squat"),
+                "running":    ("run", "running", "jog", "jogging"),
+                "falling":    ("fall", "falling", "fallen", "collapse"),
+            }
+            for act, keywords in activity_keywords.items():
+                if any(kw in text_lower for kw in keywords):
+                    activity = act
+                    break
+            if any(w in text_lower for w in ("suspicious", "unauthorized", "danger", "fall", "anomal", "concern")):
+                anomaly = "anomaly"
 
         # Normalise anomaly label
         if anomaly not in ("normal", "anomaly"):
@@ -665,7 +803,7 @@ class VLMClient:
             confidence=    confidence,
             raw_response=  raw,
             latency_ms=    latency_ms,
-            backend_used=  type(self._backend).__name__,
+            backend_used=  _short_backend_name(self._backend),
         )
 
     def _parse_qwen_response(
@@ -731,7 +869,7 @@ class VLMClient:
             confidence=       min(max(confidence, 0.0), 1.0),
             raw_response=     raw,
             latency_ms=       latency_ms,
-            backend_used=     type(self._backend).__name__,
+            backend_used=     _short_backend_name(self._backend),
             objects_detected= objects,
         )
 
@@ -809,12 +947,15 @@ class VLMClient:
         if crop.shape[0] < 20 or crop.shape[1] < 20:
             return self._fallback_result(person_id, camera_id, zone_id, zone_name)
 
-        # Detect if using Qwen backend
-        is_qwen = isinstance(self._backend, QwenVLMBackend)
+        # Detect backend type for prompt selection
+        is_qwen     = isinstance(self._backend, QwenVLMBackend)
+        is_moondream = isinstance(self._backend, MoondreamVLMBackend)
 
-        # Build prompt from metadata (Qwen uses its own warehouse prompt)
+        # Build prompt from metadata (specialised backends use their own prompt)
         if is_qwen:
             prompt = QwenVLMBackend.PROMPT
+        elif is_moondream:
+            prompt = MoondreamVLMBackend.PROMPT
         else:
             prompt = self._build_prompt(zone_name, is_restricted, extra_context)
 
@@ -867,7 +1008,7 @@ class VLMClient:
     def get_cache_stats(self) -> dict:
         return {
             "cached_entries": len(self._cache),
-            "backend": type(self._backend).__name__,
+            "backend": _short_backend_name(self._backend),
         }
 
 

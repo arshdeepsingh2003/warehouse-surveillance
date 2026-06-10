@@ -3,3 +3,4 @@ from app.schemas.camera   import CameraOut, CameraCreate, CameraStatus, CameraTy
 from app.schemas.alert    import AlertOut, AlertResolve, AlertSeverity, AlertStatus, AlertType, AlertWSEvent
 from app.schemas.activity import ActivityOut, PersonTimeline, PersonTimelineEntry, ActivityType
 from app.schemas.analytics import AnalyticsSummary
+from app.schemas.vlm_insight import VLMInsightOut
