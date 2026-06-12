@@ -21561,3 +21561,85 @@
 {"stage": "DETECTED", "ts": 1781262723.705169, "person_id": "P-1073", "camera_id": "cam-05", "uuid": "3a207e375040"}
 {"stage": "DETECTED", "ts": 1781262723.7091935, "person_id": "P-1075", "camera_id": "cam-05", "uuid": "8f55b82a9bd0"}
 {"stage": "DETECTED", "ts": 1781262723.7133694, "person_id": "P-1077", "camera_id": "cam-05", "uuid": "11872017708e"}
+{"stage": "DETECTED", "ts": 1781262725.9978175, "person_id": "P-1089", "camera_id": "cam-06", "uuid": "4187ffd9621a"}
+{"stage": "DETECTED", "ts": 1781262726.003409, "person_id": "P-1090", "camera_id": "cam-06", "uuid": "5b2987766482"}
+{"stage": "DETECTED", "ts": 1781262726.0080237, "person_id": "P-1092", "camera_id": "cam-06", "uuid": "d033fc429605"}
+{"stage": "5_frame_update_payload", "ts": 1781262727.4721289, "person_id": "P-1064", "camera_id": "cam-03", "overlay_summary": "", "backend_used": "", "activity": "carrying_object"}
+{"stage": "5_frame_update_payload", "ts": 1781262727.4741428, "person_id": "P-1065", "camera_id": "cam-03", "overlay_summary": "Person detected in Restricted Area. VLM analysis unavailable.", "backend_used": "", "activity": "carrying_object"}
+{"stage": "5_frame_update_payload", "ts": 1781262727.4761572, "person_id": "P-1066", "camera_id": "cam-03", "overlay_summary": "", "backend_used": "", "activity": "walking"}
+{"stage": "5_frame_update_payload", "ts": 1781262727.4801865, "person_id": "P-1067", "camera_id": "cam-03", "overlay_summary": "", "backend_used": "", "activity": "loitering"}
+{"stage": "5_frame_update_payload", "ts": 1781262727.5143263, "person_id": "P-1073", "camera_id": "cam-05", "overlay_summary": "", "backend_used": "", "activity": "unauthorized_entry"}
+{"stage": "5_frame_update_payload", "ts": 1781262727.51648, "person_id": "P-1075", "camera_id": "cam-05", "overlay_summary": "", "backend_used": "", "activity": "unauthorized_entry"}
+{"stage": "5_frame_update_payload", "ts": 1781262727.5184925, "person_id": "P-1077", "camera_id": "cam-05", "overlay_summary": "", "backend_used": "", "activity": "unauthorized_entry"}
+{"stage": "WS_SENT", "ts": 1781262727.6041298, "person_id": "P-1064", "camera_id": "cam-03", "has_vlm": false, "overlay_summary": ""}
+{"stage": "WS_SENT", "ts": 1781262727.6466308, "person_id": "P-1065", "camera_id": "cam-03", "has_vlm": true, "overlay_summary": "Person detected in Restricted Area. VLM analysis unavailable."}
+{"stage": "WS_SENT", "ts": 1781262727.6879435, "person_id": "P-1066", "camera_id": "cam-03", "has_vlm": false, "overlay_summary": ""}
+{"stage": "WS_SENT", "ts": 1781262727.6962411, "person_id": "P-1067", "camera_id": "cam-03", "has_vlm": false, "overlay_summary": ""}
+{"stage": "5_frame_update_payload", "ts": 1781262727.7187786, "person_id": "P-1089", "camera_id": "cam-06", "overlay_summary": "", "backend_used": "", "activity": "loitering"}
+{"stage": "5_frame_update_payload", "ts": 1781262727.720862, "person_id": "P-1090", "camera_id": "cam-06", "overlay_summary": "", "backend_used": "", "activity": "loitering"}
+{"stage": "5_frame_update_payload", "ts": 1781262727.7226188, "person_id": "P-1092", "camera_id": "cam-06", "overlay_summary": "", "backend_used": "", "activity": "walking"}
+{"stage": "WS_SENT", "ts": 1781262727.7412386, "person_id": "P-1090", "camera_id": "cam-02", "has_vlm": false, "overlay_summary": ""}
+{"stage": "WS_SENT", "ts": 1781262727.749214, "person_id": "P-1096", "camera_id": "cam-02", "has_vlm": false, "overlay_summary": ""}
+{"stage": "5_frame_update_payload", "ts": 1781262727.756635, "person_id": "P-1057", "camera_id": "cam-01", "overlay_summary": "Person detected in Restricted Area. VLM analysis unavailable.", "backend_used": "", "activity": "running"}
+{"stage": "5_frame_update_payload", "ts": 1781262727.756635, "person_id": "P-1059", "camera_id": "cam-01", "overlay_summary": "", "backend_used": "", "activity": "walking"}
+{"stage": "DETECTED", "ts": 1781262729.1089823, "person_id": "P-1057", "camera_id": "cam-01", "uuid": "b3e09fa155ee"}
+{"stage": "DETECTED", "ts": 1781262729.1150422, "person_id": "P-1059", "camera_id": "cam-01", "uuid": "fc0824f88d92"}
+{"stage": "DETECTED", "ts": 1781262729.1184735, "person_id": "P-1063", "camera_id": "cam-01", "uuid": "32468dadd966"}
+{"stage": "DETECTED", "ts": 1781262731.9762025, "person_id": "P-1090", "camera_id": "cam-02", "uuid": "a1e745d09993"}
+{"stage": "DETECTED", "ts": 1781262731.98245, "person_id": "P-1096", "camera_id": "cam-02", "uuid": "d8f0c252485f"}
+{"stage": "DETECTED", "ts": 1781262733.8236341, "person_id": "P-1064", "camera_id": "cam-03", "uuid": "52f9ae8bb7e5"}
+{"stage": "DETECTED", "ts": 1781262733.8354802, "person_id": "P-1065", "camera_id": "cam-03", "uuid": "347726a06e72"}
+{"stage": "DETECTED", "ts": 1781262733.8400822, "person_id": "P-1066", "camera_id": "cam-03", "uuid": "6579e8aa907c"}
+{"stage": "DETECTED", "ts": 1781262733.8425357, "person_id": "P-1067", "camera_id": "cam-03", "uuid": "e1c08f93dff1"}
+{"stage": "DETECTED", "ts": 1781262735.0329554, "person_id": "P-1092", "camera_id": "cam-04", "uuid": "947a65d28d67"}
+{"stage": "DETECTED", "ts": 1781262735.0349622, "person_id": "P-1099", "camera_id": "cam-04", "uuid": "ad241ac9c78e"}
+{"stage": "5_frame_update_payload", "ts": 1781262735.8989801, "person_id": "P-1073", "camera_id": "cam-05", "overlay_summary": "", "backend_used": "", "activity": "unauthorized_entry"}
+{"stage": "5_frame_update_payload", "ts": 1781262735.9009933, "person_id": "P-1075", "camera_id": "cam-05", "overlay_summary": "", "backend_used": "", "activity": "unauthorized_entry"}
+{"stage": "5_frame_update_payload", "ts": 1781262735.9050298, "person_id": "P-1077", "camera_id": "cam-05", "overlay_summary": "", "backend_used": "", "activity": "unauthorized_entry"}
+{"stage": "WS_SENT", "ts": 1781262735.994752, "person_id": "P-1064", "camera_id": "cam-03", "has_vlm": false, "overlay_summary": ""}
+{"stage": "WS_SENT", "ts": 1781262736.022976, "person_id": "P-1065", "camera_id": "cam-03", "has_vlm": true, "overlay_summary": "Person detected in Restricted Area. VLM analysis unavailable."}
+{"stage": "WS_SENT", "ts": 1781262736.0410752, "person_id": "P-1066", "camera_id": "cam-03", "has_vlm": false, "overlay_summary": ""}
+{"stage": "WS_SENT", "ts": 1781262736.0632215, "person_id": "P-1067", "camera_id": "cam-03", "has_vlm": false, "overlay_summary": ""}
+{"stage": "5_frame_update_payload", "ts": 1781262736.0976424, "person_id": "P-1092", "camera_id": "cam-04", "overlay_summary": "", "backend_used": "", "activity": "loitering"}
+{"stage": "5_frame_update_payload", "ts": 1781262736.0996537, "person_id": "P-1099", "camera_id": "cam-04", "overlay_summary": "", "backend_used": "", "activity": "running"}
+{"stage": "WS_SENT", "ts": 1781262736.11418, "person_id": "P-1089", "camera_id": "cam-06", "has_vlm": false, "overlay_summary": ""}
+{"stage": "WS_SENT", "ts": 1781262736.1202168, "person_id": "P-1090", "camera_id": "cam-06", "has_vlm": false, "overlay_summary": ""}
+{"stage": "WS_SENT", "ts": 1781262736.1262555, "person_id": "P-1092", "camera_id": "cam-06", "has_vlm": false, "overlay_summary": ""}
+{"stage": "5_frame_update_payload", "ts": 1781262736.1302783, "person_id": "P-1092", "camera_id": "cam-04", "overlay_summary": "", "backend_used": "", "activity": "loitering"}
+{"stage": "5_frame_update_payload", "ts": 1781262736.1322906, "person_id": "P-1099", "camera_id": "cam-04", "overlay_summary": "", "backend_used": "", "activity": "running"}
+{"stage": "WS_SENT", "ts": 1781262736.1403935, "person_id": "P-1073", "camera_id": "cam-05", "has_vlm": false, "overlay_summary": ""}
+{"stage": "WS_SENT", "ts": 1781262736.1403935, "person_id": "P-1075", "camera_id": "cam-05", "has_vlm": false, "overlay_summary": ""}
+{"stage": "WS_SENT", "ts": 1781262736.1403935, "person_id": "P-1077", "camera_id": "cam-05", "has_vlm": false, "overlay_summary": ""}
+{"stage": "5_frame_update_payload", "ts": 1781262736.1493144, "person_id": "P-1089", "camera_id": "cam-06", "overlay_summary": "", "backend_used": "", "activity": "loitering"}
+{"stage": "5_frame_update_payload", "ts": 1781262736.1493144, "person_id": "P-1090", "camera_id": "cam-06", "overlay_summary": "", "backend_used": "", "activity": "loitering"}
+{"stage": "5_frame_update_payload", "ts": 1781262736.1551025, "person_id": "P-1092", "camera_id": "cam-06", "overlay_summary": "", "backend_used": "", "activity": "walking"}
+{"stage": "WS_SENT", "ts": 1781262736.1551025, "person_id": "P-1057", "camera_id": "cam-01", "has_vlm": true, "overlay_summary": "Person detected in Restricted Area. VLM analysis unavailable."}
+{"stage": "WS_SENT", "ts": 1781262736.1632664, "person_id": "P-1059", "camera_id": "cam-01", "has_vlm": false, "overlay_summary": ""}
+{"stage": "DETECTED", "ts": 1781262736.8724144, "person_id": "P-1089", "camera_id": "cam-06", "uuid": "4187ffd9621a"}
+{"stage": "DETECTED", "ts": 1781262736.8724144, "person_id": "P-1090", "camera_id": "cam-06", "uuid": "5b2987766482"}
+{"stage": "DETECTED", "ts": 1781262736.8811834, "person_id": "P-1092", "camera_id": "cam-06", "uuid": "d033fc429605"}
+{"stage": "DETECTED", "ts": 1781262738.2407844, "person_id": "P-1073", "camera_id": "cam-05", "uuid": "3a207e375040"}
+{"stage": "DETECTED", "ts": 1781262738.2443316, "person_id": "P-1075", "camera_id": "cam-05", "uuid": "8f55b82a9bd0"}
+{"stage": "DETECTED", "ts": 1781262738.247779, "person_id": "P-1077", "camera_id": "cam-05", "uuid": "11872017708e"}
+{"stage": "DETECTED", "ts": 1781262739.7441838, "person_id": "P-1057", "camera_id": "cam-01", "uuid": "b3e09fa155ee"}
+{"stage": "DETECTED", "ts": 1781262739.7441838, "person_id": "P-1059", "camera_id": "cam-01", "uuid": "fc0824f88d92"}
+{"stage": "DETECTED", "ts": 1781262739.7512193, "person_id": "P-1063", "camera_id": "cam-01", "uuid": "32468dadd966"}
+{"stage": "DETECTED", "ts": 1781262741.0667899, "person_id": "P-1090", "camera_id": "cam-02", "uuid": "a1e745d09993"}
+{"stage": "DETECTED", "ts": 1781262741.0688024, "person_id": "P-1096", "camera_id": "cam-02", "uuid": "d8f0c252485f"}
+{"stage": "DETECTED", "ts": 1781262742.355868, "person_id": "P-1064", "camera_id": "cam-03", "uuid": "52f9ae8bb7e5"}
+{"stage": "DETECTED", "ts": 1781262742.355868, "person_id": "P-1065", "camera_id": "cam-03", "uuid": "347726a06e72"}
+{"stage": "DETECTED", "ts": 1781262742.363894, "person_id": "P-1067", "camera_id": "cam-03", "uuid": "e1c08f93dff1"}
+{"stage": "DETECTED", "ts": 1781262743.7548869, "person_id": "P-1092", "camera_id": "cam-04", "uuid": "947a65d28d67"}
+{"stage": "DETECTED", "ts": 1781262743.7644663, "person_id": "P-1099", "camera_id": "cam-04", "uuid": "ad241ac9c78e"}
+{"stage": "WS_SENT", "ts": 1781262744.530576, "person_id": "P-1073", "camera_id": "cam-05", "has_vlm": false, "overlay_summary": ""}
+{"stage": "WS_SENT", "ts": 1781262744.6089833, "person_id": "P-1075", "camera_id": "cam-05", "has_vlm": false, "overlay_summary": ""}
+{"stage": "WS_SENT", "ts": 1781262744.6509054, "person_id": "P-1077", "camera_id": "cam-05", "has_vlm": false, "overlay_summary": ""}
+{"stage": "5_frame_update_payload", "ts": 1781262744.6919203, "person_id": "P-1090", "camera_id": "cam-02", "overlay_summary": "", "backend_used": "", "activity": "walking"}
+{"stage": "5_frame_update_payload", "ts": 1781262744.6939332, "person_id": "P-1096", "camera_id": "cam-02", "overlay_summary": "", "backend_used": "", "activity": "running"}
+{"stage": "WS_SENT", "ts": 1781262744.7083707, "person_id": "P-1089", "camera_id": "cam-06", "has_vlm": false, "overlay_summary": ""}
+{"stage": "WS_SENT", "ts": 1781262744.7126775, "person_id": "P-1090", "camera_id": "cam-06", "has_vlm": false, "overlay_summary": ""}
+{"stage": "WS_SENT", "ts": 1781262744.7182055, "person_id": "P-1092", "camera_id": "cam-06", "has_vlm": false, "overlay_summary": ""}
+{"stage": "WS_SENT", "ts": 1781262744.7247572, "person_id": "P-1092", "camera_id": "cam-04", "has_vlm": false, "overlay_summary": ""}
+{"stage": "WS_SENT", "ts": 1781262744.7285209, "person_id": "P-1099", "camera_id": "cam-04", "has_vlm": false, "overlay_summary": ""}
+{"stage": "WS_SENT", "ts": 1781262744.7305298, "person_id": "P-1092", "camera_id": "cam-04", "has_vlm": false, "overlay_summary": ""}
+{"stage": "WS_SENT", "ts": 1781262744.7377174, "person_id": "P-1099", "camera_id": "cam-04", "has_vlm": false, "overlay_summary": ""}
