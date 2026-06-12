@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import os
 import time
@@ -46,11 +47,26 @@ from ai.analyzer.activity_analyzer import ActivityResult
 from ai.analyzer.recognizer import ActivityRecognizer
 from ai.rules.rules_engine import RulesEngine, AlertEvent
 from ai.overlay.frame_overlay import FrameOverlay
+from ai.vlm.vlm_client import VLMClient, RateLimitError
+from ai.vlm.event_engine import EventEngine
 from pipeline.api_client import APIClient
 from streams.frame_reader import FrameData
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
+
+_TRACE_FILE = os.path.join(os.path.dirname(__file__), "..", "vlm_overlay_trace.jsonl")
+_TRACE_FILE = os.path.normpath(_TRACE_FILE)
+
+
+def _write_trace(stage: str, **kwargs) -> None:
+    """Append a JSON line to the overlay trace file."""
+    try:
+        record = {"stage": stage, "ts": time.time(), **kwargs}
+        with open(_TRACE_FILE, "a") as f:
+            f.write(json.dumps(record, default=str) + "\n")
+    except Exception:
+        pass
 
 
 # ── Per-camera pipeline bundle ────────────────────────────────────────────────
@@ -405,36 +421,134 @@ class VLMAIFrameProcessor(AIFrameProcessor):
     def __init__(self, api_client: APIClient) -> None:
         super().__init__(api_client)
 
-        from ai.vlm.vlm_client import VLMClient
         from ai.llm.llm_client import LLMClient
         from ai.llm.zone_summarizer import ZoneSummarizer
 
         self._vlm       = VLMClient()
+        self._event_engine = EventEngine(self._vlm)
         self._llm       = LLMClient()
         self._summarizer = ZoneSummarizer(api_client, self._llm)
 
-        # Counter for VLM throttling (per camera)
-        self._vlm_counters: defaultdict[str, int] = defaultdict(int)
+        # Track UUIDs currently being analyzed (prevents duplicate in-flight VLM calls)
+        self._vlm_inflight_persons: set[str] = set()
 
-        # Latest VLM results per person_id (merged into activities)
-        self._vlm_cache: dict[str, dict] = {}
+        # ── Audit counters ────────────────────────────────────────────────────
+        self._audit: dict[str, int] = {
+            "persons_detected": 0,
+            "vlm_tasks_created": 0,
+            "groq_requests_started": 0,
+            "groq_requests_completed": 0,
+            "groq_requests_failed": 0,
+            "vlm_results_parsed": 0,
+            "vlm_insights_posted": 0,
+            "vlm_results_orphaned": 0,
+            "vlm_results_matched_by_position": 0,
+            "vlm_results_attached_to_original_track": 0,
+        }
+        self._track_creation_times: dict[str, float] = {}  # track_uuid → creation time
+        self._track_lifetimes: list[float] = []
+        self._person_traces: dict[str, list[str]] = {}  # track_uuid → trace log
 
+        # ── Verification checkpoints ──────────────────────────────────────────
+        _groq_key_loaded = bool(settings.GROQ_API_KEY)
+        _vlm_backend = settings.VLM_BACKEND
+        _use_vlm = settings.USE_VLM
+        _event_driven = settings.USE_EVENT_DRIVEN_VLM
+        logger.info(
+            f"VERIFY[1] GROQ_API_KEY loaded={'yes' if _groq_key_loaded else 'NO'} "
+            f"(len={len(settings.GROQ_API_KEY) if _groq_key_loaded else 0})"
+        )
+        logger.info(
+            f"VERIFY[2] VLM_BACKEND={_vlm_backend} "
+            f"USE_VLM={_use_vlm} "
+            f"EVENT_DRIVEN={_event_driven}"
+        )
         logger.info(
             f"VLMAIFrameProcessor ready | "
-            f"VLM={settings.VLM_BACKEND} | LLM={settings.LLM_BACKEND}"
+            f"VLM={settings.VLM_BACKEND} | LLM={settings.LLM_BACKEND} | "
+            f"EventDriven={_event_driven}"
         )
 
     async def warmup(self) -> None:
         """Pre-load VLM model weights."""
         await self._vlm.warmup()
 
+    def clear_vlm_state(self) -> None:
+        """Clear all VLM caches — call before restarting streams or after reconfig."""
+        self._vlm.clear_cache()
+        self._vlm_inflight_persons.clear()
+        self._audit = {k: 0 for k in self._audit}
+        logger.info("[VLM] Cleared all VLM state (cache, inflight, audit)")
+
     def start_background_tasks(self) -> None:
         """Launch ZoneSummarizer loop and crop cleanup tasks. Call after the event loop starts."""
         asyncio.create_task(self._summarizer.run())
+        asyncio.create_task(self._audit_summary_loop())
+        asyncio.create_task(self._event_engine_cleanup_loop())
         logger.info("ZoneSummarizer background task started")
         # Start crop cleanup for all existing pipelines
         for pipe in self._pipelines.values():
             pipe.crop_mgr.start_cleanup_task()
+
+    async def _audit_summary_loop(self) -> None:
+        """Log audit counters and tracker metrics every 60 seconds."""
+        while True:
+            await asyncio.sleep(60)
+            counters = " | ".join(f"{k}={v}" for k, v in self._audit.items())
+            logger.info(f"[AUDIT] {counters}")
+
+            # Tracker-level metrics from all pipelines
+            all_avg_lifetimes = []
+            all_median_lifetimes = []
+            all_id_switches = 0
+            all_tracks_deleted_before_vlm = 0
+            for pipe in self._pipelines.values():
+                metrics = pipe.tracker.get_audit_metrics()
+                all_avg_lifetimes.append(metrics.get("average_track_lifetime_s", 0))
+                all_median_lifetimes.append(metrics.get("median_track_lifetime_s", 0))
+                all_id_switches += metrics.get("id_switches_per_minute", 0)
+                all_tracks_deleted_before_vlm += metrics.get("tracks_deleted_before_vlm", 0)
+
+            overall_avg = (sum(all_avg_lifetimes) / len(all_avg_lifetimes)) if all_avg_lifetimes else 0
+            overall_median = (sum(all_median_lifetimes) / len(all_median_lifetimes)) if all_median_lifetimes else 0
+
+            logger.info(
+                f"[AUDIT] TRACKER_METRICS "
+                f"average_track_lifetime_s={overall_avg:.2f} "
+                f"median_track_lifetime_s={overall_median:.2f} "
+                f"id_switches_per_minute={all_id_switches} "
+                f"tracks_deleted_before_vlm={all_tracks_deleted_before_vlm} "
+                f"vlm_attached_to_original={self._audit.get('vlm_results_attached_to_original_track', 0)} "
+                f"vlm_reattributed_by_position={self._audit.get('vlm_results_matched_by_position', 0)}"
+            )
+
+                # Log EventEngine metrics
+            ee_metrics = self._event_engine.get_metrics()
+            logger.info(
+                f"[AUDIT] EVENT_ENGINE "
+                f"requests_started={ee_metrics['requests_started']} "
+                f"requests_completed={ee_metrics['requests_completed']} "
+                f"requests_failed={ee_metrics['requests_failed']} "
+                f"requests_429={ee_metrics['requests_429']} "
+                f"cache_hits={ee_metrics['cache_hits']} "
+                f"cache_misses={ee_metrics['cache_misses']} "
+                f"cooldown_skips={ee_metrics['cooldown_skips']} "
+                f"event_triggers={ee_metrics['event_triggers']} "
+                f"queue_depth={ee_metrics['queue_depth']} "
+                f"degraded={ee_metrics['is_degraded']}"
+            )
+
+            if self._track_lifetimes:
+                avg = sum(self._track_lifetimes) / len(self._track_lifetimes)
+                sorted_lts = sorted(self._track_lifetimes)
+                n = len(sorted_lts)
+                median = sorted_lts[n // 2] if n > 0 else 0.0
+                logger.info(
+                    f"[AUDIT] TRACK_LIFETIMES count={len(self._track_lifetimes)} "
+                    f"avg={avg:.2f}s median={median:.2f}s "
+                    f"max={max(self._track_lifetimes):.2f}s "
+                    f"min={min(self._track_lifetimes):.2f}s"
+                )
 
     async def process(self, frame_data: FrameData) -> None:
         """
@@ -473,9 +587,7 @@ class VLMAIFrameProcessor(AIFrameProcessor):
 
         pipe = self._pipelines[cam_id]
         pipe.frame_skip_counter += 1
-        self._vlm_counters[cam_id] += 1
         run_ai  = (pipe.frame_skip_counter % settings.PROCESS_EVERY_N_FRAMES == 0)
-        run_vlm = (self._vlm_counters[cam_id] % settings.VLM_EVERY_N_FRAMES == 0)
 
         persons:    list[TrackedPerson] = pipe._last_persons
         activities: list[ActivityResult]= pipe._last_activities
@@ -508,6 +620,28 @@ class VLMAIFrameProcessor(AIFrameProcessor):
                     f"ids=[{', '.join(p.person_id for p in persons)}]"
                 )
 
+                # ── Track lifecycle audit (keyed by track_uuid) ──────────
+                current_uuids = {p.track_uuid for p in persons}
+                for p in persons:
+                    uid = p.track_uuid
+                    if uid not in self._track_creation_times:
+                        self._track_creation_times[uid] = time.monotonic()
+                        self._audit["persons_detected"] += 1
+                        self._person_traces[uid] = [f"DETECTED frame={frame_data.frame_number}"]
+                        logger.info(f"[VLM-TRACE] {p.person_id} DETECTED uuid={uid}")
+                        _write_trace("DETECTED", person_id=p.person_id, camera_id=cam_id, uuid=uid)
+                # Detect deletions by checking previously known UUIDs
+                if self._track_creation_times:
+                    vanished = set(self._track_creation_times.keys()) - current_uuids
+                    for uid in vanished:
+                        created = self._track_creation_times.pop(uid, 0)
+                        if created:
+                            lifetime = time.monotonic() - created
+                            self._track_lifetimes.append(lifetime)
+                            logger.info(
+                                f"[TRACK-LIFETIME] uuid={uid} lived {lifetime:.2f}s before deletion"
+                            )
+
                 # ── Crop Generation (for each tracked person) ─────────────
                 ts = frame_data.timestamp or datetime.now(timezone.utc).isoformat()
                 for p in persons:
@@ -515,6 +649,7 @@ class VLMAIFrameProcessor(AIFrameProcessor):
                         frame=        frame,
                         bbox=         p.bbox,
                         track_id=     p.track_id,
+                        track_uuid=   p.track_uuid,
                         person_id=    p.person_id,
                         timestamp=    ts,
                         frame_number= frame_data.frame_number,
@@ -559,11 +694,45 @@ class VLMAIFrameProcessor(AIFrameProcessor):
                 f"cached_tracks={len(persons)} (active={n_active})"
             )
 
-        # ── VLM enrichment (async, throttled, per confirmed person) ──────────
-        if run_vlm and persons and settings.USE_VLM:
-            asyncio.create_task(
-                self._run_vlm_batch(cam_id, frame.copy(), persons, activities)
-            )
+        # ── Event-driven VLM enrichment (replaces frame-based polling) ────────
+        if settings.USE_EVENT_DRIVEN_VLM and persons and activities and settings.USE_VLM:
+            vlm_candidates = []
+            for person, activity in zip(persons, activities):
+                if person.track_uuid in self._vlm_inflight_persons:
+                    logger.debug(
+                        f"[VLM-TRACE] {person.person_id} INFLIGHT_SKIP uuid={person.track_uuid}"
+                    )
+                    continue
+                should_call, reason = self._event_engine.evaluate(person, activity)
+                if should_call:
+                    vlm_candidates.append((person, activity, reason))
+                    self._vlm_inflight_persons.add(person.track_uuid)
+                    self._audit["vlm_tasks_created"] += 1
+                    logger.info(
+                        f"[VLM-TRACE] {person.person_id} VLM_TRIGGERED uuid={person.track_uuid} "
+                        f"reason={reason}"
+                    )
+                    _write_trace("VLM_TRIGGERED", person_id=person.person_id,
+                                 camera_id=cam_id, uuid=person.track_uuid, reason=reason)
+
+            if vlm_candidates:
+                asyncio.create_task(
+                    self._run_vlm_batch(cam_id, frame.copy(), vlm_candidates)
+                )
+        elif persons and settings.USE_VLM and not settings.USE_EVENT_DRIVEN_VLM:
+            # Legacy fallback: frame-based VLM (original behavior)
+            run_vlm = (pipe.frame_skip_counter % settings.VLM_EVERY_N_FRAMES == 0)
+            vlm_candidates = []
+            for p in persons:
+                if p.track_uuid in self._vlm_inflight_persons:
+                    continue
+                vlm_candidates.append((p, None, "legacy_frame_trigger"))
+                self._vlm_inflight_persons.add(p.track_uuid)
+                self._audit["vlm_tasks_created"] += 1
+            if vlm_candidates and run_vlm:
+                asyncio.create_task(
+                    self._run_vlm_batch(cam_id, frame.copy(), vlm_candidates)
+                )
 
         # ── Overlay (AI frames only — skip frames reuse last annotated JPEG) ──
         if run_ai:
@@ -647,82 +816,120 @@ class VLMAIFrameProcessor(AIFrameProcessor):
 
     async def _run_vlm_batch(
         self,
-        cam_id:     str,
-        frame:      np.ndarray,
-        persons:    list[TrackedPerson],
-        activities: list[ActivityResult],
+        cam_id:  str,
+        frame:   np.ndarray,
+        candidates: list[tuple[TrackedPerson, Optional[ActivityResult], str]],
     ) -> None:
         """
-        Query VLM for up to MAX_PERSONS_PER_FRAME persons concurrently,
-        using saved crop images from the CropManager.
+        Event-driven VLM batch processing.
 
-        Merges VLM results back into the activity cache so the next
-        _post_results call uses VLM-enriched descriptions.
+        Takes candidates from EventEngine (each with a trigger reason),
+        acquires throttle slot, queries VLM, and records results.
+
+        Args:
+            cam_id:      Camera ID
+            frame:       Full frame (for crop extraction)
+            candidates:  List of (person, activity, reason) tuples to analyze
         """
         pipe = self._pipelines.get(cam_id)
         if pipe is None:
             return
 
-        # Prioritize anomalous persons and persons in restricted zones
-        priority = sorted(
-            persons,
-            key=lambda p: (p.is_restricted, p.dwell_time),
-            reverse=True,
-        )
-        batch = priority[:settings.VLM_MAX_PERSONS_PER_FRAME]
+        batch = candidates[:settings.VLM_MAX_PERSONS_PER_FRAME]
+        enqueue_ts = time.monotonic()
+        tasks_info: list[tuple[TrackedPerson, Optional[ActivityResult], str, object]] = []
 
-        # Build lookup: track_id → activity
-        act_map = {a.track_id: a for a in activities}
-
-        # Use saved crop images instead of raw frame+bbox
-        tasks = []
-        for p in batch:
-            crop_path = pipe.crop_mgr.get_crop_path(p.person_id)
-            if crop_path is None:
+        for person, activity, reason in batch:
+            crop_array = pipe.crop_mgr.get_crop_array(person.person_id, track_uuid=person.track_uuid)
+            if crop_array is None:
                 logger.debug(
-                    f"[{cam_id}] No crop available for {p.person_id}, skipping VLM"
+                    f"[{cam_id}] No crop available for {person.person_id} (uuid={person.track_uuid}), skipping VLM"
                 )
+                self._vlm_inflight_persons.discard(person.track_uuid)
                 continue
+
+            act_type = activity.activity_type if activity else "unknown"
             metadata = {
-                "person_id":     p.person_id,
+                "person_id":     person.person_id,
+                "track_uuid":    person.track_uuid,
                 "camera_id":     cam_id,
-                "zone_id":       p.zone_id,
-                "zone_name":     p.zone_name,
-                "is_restricted": p.is_restricted,
+                "zone_id":       person.zone_id,
+                "zone_name":     person.zone_name,
+                "is_restricted": person.is_restricted,
                 "extra_context": (
-                    f"Rule-based detection: {act_map[p.track_id].activity_type if p.track_id in act_map else 'unknown'}. "
-                    f"Dwell time: {p.dwell_time:.0f}s."
+                    f"Event trigger: {reason}. "
+                    f"Rule-based activity: {act_type}. "
+                    f"Dwell time: {person.dwell_time:.0f}s."
                 ),
             }
-            tasks.append(self._vlm.analyze_crop(crop_path=crop_path, metadata=metadata))
+            tasks_info.append((
+                person, activity, reason,
+                self._vlm.analyze_crop(
+                    crop_path="", metadata=metadata,
+                    crop_array=crop_array, enqueue_ts=enqueue_ts,
+                ),
+            ))
 
-        if not tasks:
+        if not tasks_info:
             return
 
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        self._audit["groq_requests_started"] += len(tasks_info)
+        for p, _, _, _ in tasks_info:
+            _write_trace("GROQ_REQUEST", person_id=p.person_id, camera_id=cam_id, uuid=p.track_uuid)
 
-        for person, result in zip(batch, results):
+        # Acquire throttle before firing batch (rate limit: 1 req/s global)
+        await self._event_engine.acquire_throttle()
+
+        results = await asyncio.gather(
+            *[task for _, _, _, task in tasks_info], return_exceptions=True,
+        )
+
+        for (person, activity, reason, _), result in zip(tasks_info, results):
             if isinstance(result, Exception):
-                logger.debug(f"VLM task error for {person.person_id}: {result}")
+                is_429 = isinstance(result, RateLimitError)
+                if is_429:
+                    self._event_engine.handle_429()
+                    logger.warning(
+                        f"[VLM-DEGRADED] {person.person_id} GROQ_429 uuid={person.track_uuid}"
+                    )
+                else:
+                    self._event_engine.record_failed()
+                    logger.info(
+                        f"[VLM-TRACE] {person.person_id} GROQ_REQUEST_FAILED error={result}"
+                    )
+                _write_trace("GROQ_REQUEST_FAILED",
+                    person_id=person.person_id, camera_id=cam_id, uuid=person.track_uuid,
+                    error=str(result))
+                self._audit["groq_requests_failed"] += 1
+                self._vlm_inflight_persons.discard(person.track_uuid)
                 continue
 
-            # Cache VLM result (used in next post_results call)
-            self._vlm_cache[person.person_id] = {
-                "description":      result.description,
-                "activity_type":    result.activity_type,
-                "anomaly_label":    result.anomaly_label,
-                "severity":         result.severity,
-                "confidence":       result.confidence,
-                "backend_used":     result.backend_used,
-                "latency_ms":       result.latency_ms,
-                "objects_detected": getattr(result, "objects_detected", []),
-            }
+            self._event_engine.handle_success()
+            self._event_engine.record_completed()
 
-            # ── Persist VLM insight to dedicated endpoint ───────────────
+            # Record VLM call in EventEngine state
+            self._event_engine.record_vlm_call(person, activity, result, reason)
+
+            self._audit["groq_requests_completed"] += 1
+            self._audit["vlm_results_parsed"] += 1
+
+            # HARD RULE: skip fallback results
+            if result.backend_used == "fallback":
+                logger.warning(
+                    f"[FALLBACK-TRACE] person_id={person.person_id} "
+                    f"camera_id={cam_id} reason=VLM_returned_fallback"
+                )
+                self._audit["vlm_results_orphaned"] += 1
+                self._vlm_inflight_persons.discard(person.track_uuid)
+                continue
+
+            overlay_summary = result.description[:120]
+
+            # ── Persist VLM insight ─────────────────────────────────────
             await self._api.post_vlm_insight(
                 camera_id=        cam_id,
                 zone=             person.zone_id,
-                person_id=        result.person_id,
+                person_id=        person.person_id,
                 activity_type=    result.activity_type,
                 description=      result.description,
                 anomaly_label=    result.anomaly_label,
@@ -732,12 +939,15 @@ class VLMAIFrameProcessor(AIFrameProcessor):
                 latency_ms=       result.latency_ms,
                 source=           "vlm",
             )
-
+            self._audit["vlm_insights_posted"] += 1
             logger.info(
                 f"[VLM] [{cam_id}] {person.person_id} → "
                 f"{'⚠ ANOMALY' if result.is_anomaly else 'normal'} | "
-                f"{result.description[:60]}… | {result.latency_ms}ms"
+                f"{result.description[:60]}… | {result.latency_ms}ms | "
+                f"trigger={reason}"
             )
+
+            self._vlm_inflight_persons.discard(person.track_uuid)
 
     # ── Enhanced post_results with VLM enrichment ─────────────────────────────
 
@@ -784,9 +994,9 @@ class VLMAIFrameProcessor(AIFrameProcessor):
             self._alert_counts[cam_id] += 1
             snapshot = self._frame_to_b64(frame)
 
-            # Get VLM-enriched description for alert
-            vlm_data    = self._vlm_cache.get(alert.person_id, {})
-            description = vlm_data.get("description") or alert.description
+            # Get VLM-enriched description for alert (from EventEngine)
+            vlm_desc    = self._event_engine.get_vlm_description(alert.person_id)
+            description = vlm_desc or alert.description
 
             await self._api.post_alert(
                 camera_id=   cam_id,
@@ -819,21 +1029,63 @@ class VLMAIFrameProcessor(AIFrameProcessor):
             person_list: list[dict] = []
             for i, p in enumerate(persons):
                 act = activities[i].activity_type if i < len(activities) else "unknown"
-                person_list.append({
+                entry: dict = {
                     "person_id":     p.person_id,
+                    "track_uuid":    p.track_uuid,
                     "zone":          p.zone_id,
                     "activity":      act,
                     "dwell_seconds": int(p.dwell_time),
                     "bbox":          list(p.bbox),
                     "center":        list(p.center),
-                })
+                }
+                # Include VLM description in frame_update payload (from EventEngine)
+                vlm_data = self._event_engine.get_vlm_data(p.person_id)
+                if vlm_data:
+                    entry["vlm_description"]   = vlm_data.get("description", "")
+                    entry["vlm_anomaly_label"] = vlm_data.get("anomaly_label", "normal")
+                    entry["vlm_event"]         = vlm_data.get("event", "")
+                person_list.append(entry)
             logger.info(
                 f"🔍 TRACE[pre-ws(vlm)] camera={cam_id} | "
                 f"persons={len(person_list)} | "
                 f"ids=[{', '.join(p['person_id'] for p in person_list)}] | "
                 f"bboxes=[{'; '.join(str(p['bbox']) for p in person_list)}]"
             )
+            for entry in person_list:
+                _write_trace("5_frame_update_payload",
+                    person_id=entry["person_id"], camera_id=cam_id,
+                    overlay_summary=entry.get("vlm_description", ""),
+                    backend_used="",
+                    activity=entry.get("activity", "unknown"))
             await self._api.broadcast_frame_update(camera_id=cam_id, persons=person_list)
+            for entry in person_list:
+                pid = entry["person_id"]
+                has_vlm = "vlm_description" in entry
+                vlm_desc = entry.get("vlm_description", "")
+                logger.info(
+                    f"[VLM-TRACE] {pid} WS_SENT "
+                    f"has_vlm={has_vlm} "
+                    f"overlay_summary=\"{vlm_desc[:80]}\""
+                )
+                _write_trace("WS_SENT",
+                    person_id=pid, camera_id=cam_id,
+                    has_vlm=has_vlm,
+                    overlay_summary=vlm_desc[:80])
+
+    async def _event_engine_cleanup_loop(self) -> None:
+        """Periodically evict stale EventEngine state and cache."""
+        while True:
+            await asyncio.sleep(30)
+            try:
+                # Collect active person IDs from all pipelines
+                active_ids: set[str] = set()
+                for pipe in self._pipelines.values():
+                    for p in (pipe._last_persons or []):
+                        active_ids.add(p.person_id)
+                self._event_engine.evict_stale_persons(active_ids)
+                self._event_engine.evict_stale_cache()
+            except Exception:
+                logger.debug("EventEngine cleanup error", exc_info=True)
 
     async def _post_alert_explanation(
         self,

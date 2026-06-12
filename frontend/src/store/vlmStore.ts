@@ -4,6 +4,13 @@
 import { create } from 'zustand'
 import type { VLMInsight } from '../types'
 
+// HARD RULE: block any insight whose description matches known fallback patterns
+function _isFallback(insight: VLMInsight): boolean {
+  if (insight.backend_used === 'fallback') return true
+  const desc = insight.description ?? ''
+  return desc.includes('VLM analysis unavailable') || desc.includes('Person detected in')
+}
+
 interface VLMState {
   insights:          VLMInsight[]          // all insights (newest first, capped at 100)
   vlmInsights:       VLMInsight[]          // actual VLM insights (newest first, capped at 100)
@@ -21,6 +28,12 @@ export const useVLMStore = create<VLMState>((set) => ({
   latestByPerson: {},
 
   addInsight: (insight) => {
+    // HARD RULE: silently drop fallback insights at the store level
+    if (_isFallback(insight)) {
+      console.warn(`[FALLBACK-TRACE] store blocked insight person_id=${insight.person_id} backend=${insight.backend_used} desc="${(insight.description ?? '').slice(0, 60)}"`)
+      return
+    }
+
     set((state) => {
       const isVlm = insight.source === 'vlm' || insight.source === 'hybrid'
 
@@ -51,11 +64,12 @@ export const useVLMStore = create<VLMState>((set) => ({
   },
 
   setInsights: (insights) => {
+    const filtered = insights.filter(i => !_isFallback(i))
     set({
-      insights,
-      vlmInsights: insights.filter(i => i.source === 'vlm' || i.source === 'hybrid'),
+      insights: filtered,
+      vlmInsights: filtered.filter(i => i.source === 'vlm' || i.source === 'hybrid'),
       latestByPerson: Object.fromEntries(
-        insights.map(i => [i.person_id, i])
+        filtered.map(i => [i.person_id, i])
       ),
     })
   },

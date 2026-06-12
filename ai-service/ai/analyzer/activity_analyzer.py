@@ -79,6 +79,7 @@ class ActivityResult:
     person_id:     str
     track_id:      int
     activity_type: str
+    track_uuid:    str    = ""    # stable UUID for VLM key continuity
     anomaly_label: str    = "normal"    # "normal" | "anomaly"
     description:   str    = ""
     confidence:    float  = 0.8
@@ -309,6 +310,7 @@ class ActivityAnalyzer:
             return ActivityResult(
                 person_id=    person.person_id,
                 track_id=     tid,
+                track_uuid=   person.track_uuid,
                 activity_type=ActivityLabel.UNAUTHORIZED_ENTRY,
                 anomaly_label="anomaly",
                 description=  (
@@ -344,6 +346,7 @@ class ActivityAnalyzer:
             return ActivityResult(
                 person_id=    person.person_id,
                 track_id=     tid,
+                track_uuid=   person.track_uuid,
                 activity_type=ActivityLabel.FALLING,
                 anomaly_label="anomaly",
                 description=  (
@@ -362,6 +365,7 @@ class ActivityAnalyzer:
             return ActivityResult(
                 person_id=    person.person_id,
                 track_id=     tid,
+                track_uuid=   person.track_uuid,
                 activity_type=ActivityLabel.RUNNING,
                 anomaly_label="anomaly",
                 description=  (
@@ -382,6 +386,7 @@ class ActivityAnalyzer:
             return ActivityResult(
                 person_id=    person.person_id,
                 track_id=     tid,
+                track_uuid=   person.track_uuid,
                 activity_type=ActivityLabel.LOITERING,
                 anomaly_label="anomaly",
                 description=  (
@@ -408,6 +413,7 @@ class ActivityAnalyzer:
             return ActivityResult(
                 person_id=    person.person_id,
                 track_id=     tid,
+                track_uuid=   person.track_uuid,
                 activity_type=ActivityLabel.CARRYING_OBJECT,
                 anomaly_label="normal",
                 description=  (
@@ -431,6 +437,7 @@ class ActivityAnalyzer:
                 return ActivityResult(
                     person_id=    person.person_id,
                     track_id=     tid,
+                    track_uuid=   person.track_uuid,
                     activity_type=ActivityLabel.HANDLING_ITEMS,
                     anomaly_label="normal",
                     description=  (
@@ -455,6 +462,7 @@ class ActivityAnalyzer:
         return ActivityResult(
             person_id=    person.person_id,
             track_id=     tid,
+            track_uuid=   person.track_uuid,
             activity_type=activity,
             anomaly_label="normal",
             description=  desc,

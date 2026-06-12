@@ -2,47 +2,30 @@
 ai/tracker/person_tracker.py
 ─────────────────────────────
 Person Tracker — assigns stable IDs to detected persons across frames.
+Supports track_uuid persistence across tracker ID regeneration.
 
 Architecture: IoU-based Kalman tracker (ByteTrack-lite)
 ─────────────────────────────────────────────────────────
 We implement a lightweight ByteTrack-inspired tracker that:
   1. Predicts each track's position using a Kalman filter
   2. Matches new detections to existing tracks using IoU
-  3. Assigns a new ID to unmatched detections
+  3. Assigns a new ID to unmatched detections (with re-identification)
   4. Removes tracks that haven't been matched for N frames
-
-Why not use the full DeepSORT/ByteTrack library?
-  • Full libraries add 200+ MB of dependencies
-  • This implementation is 200 lines and covers 90% of warehouse use cases
-  • Easy to read, debug, and modify
-  • Drop-in replacement: same interface, just swap the class
-
-When to upgrade to full ByteTrack:
-  • You have crowds of 20+ people
-  • People cross each other frequently
-  • You need re-identification across camera cuts
 
 Track lifecycle:
   NEW         → first seen, needs N confirmations
   CONFIRMED   → reliably tracked, published to downstream
   LOST        → not matched for a few frames (still in memory)
-  DELETED     → missing too long → removed
+  DELETED     → missing too long → removed (saved in recently_deleted buffer)
 
-Ghost-bounding-box prevention:
-  • Tracks whose predicted bbox drifts mostly outside the frame are
-    deleted immediately instead of lingering for MAX_MISSES frames.
-  • Missed tracks pressed against the frame edge are pruned immediately
-    (touches_edge check) — the bbox property clamps coordinates so
-    a drifted-out box appears stuck at the border.
-  • Velocity is damped (×0.7) on each miss to prevent runaway predictions.
-  • IoU scores for missed tracks are penalized (×0.85) to prevent a ghost
-    from latching onto a different person's detection.
-  • Confidence decays (×0.85) on each missed frame.
-  • MAX_MISSES = 3 — at 10 FPS this is 0.3 s of persistence.
+When a track is deleted and a new detection matches the last-known position
+of a recently deleted track (IoU ≥ 0.3, within 5 seconds), the original
+track_uuid is carried forward to maintain VLM cache continuity.
 
 Output per track:
   TrackedPerson = {
-    track_id:   int             unique stable ID (P-1001, P-1002, ...)
+    track_uuid: str             stable UUID surviving re-identification
+    track_id:   int             transient counter ID (P-1001, P-1002, ...)
     bbox:       (x1,y1,x2,y2)  current bounding box
     confidence: float
     zone_id:    str             which zone the person is in
@@ -55,7 +38,9 @@ Output per track:
 from __future__ import annotations
 
 import time
+import uuid
 import logging
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -67,14 +52,6 @@ from ai.zones.zone_config import get_zone_for_point, Zone
 
 logger = logging.getLogger(__name__)
 
-
-# ── Kalman filter constants ───────────────────────────────────────────────────
-# State: [cx, cy, w, h, vcx, vcy, vw, vh]  (center_x, center_y, width, height + velocities)
-_DT = 1.0  # one frame time step
-
-# Track confirmation threshold — how many matched detections before publishing
-MIN_HITS_TO_CONFIRM = 1
-
 # ── TrackedPerson dataclass ───────────────────────────────────────────────────
 
 @dataclass
@@ -84,6 +61,7 @@ class TrackedPerson:
     Everything the rules engine and activity analyzer needs is here.
     """
     track_id:    int
+    track_uuid:  str    # stable UUID that survives re-identification
     bbox:        tuple[int, int, int, int]   # x1,y1,x2,y2
     confidence:  float
     zone_id:     str
@@ -113,6 +91,7 @@ class TrackedPerson:
     def to_dict(self) -> dict:
         return {
             "track_id":    self.track_id,
+            "track_uuid":  self.track_uuid,
             "person_id":   self.person_id,
             "bbox":        list(self.bbox),
             "confidence":  round(self.confidence, 3),
@@ -125,14 +104,33 @@ class TrackedPerson:
         }
 
 
+@dataclass
+class _RecentTrack:
+    """A recently deleted track kept for re-identification."""
+    track_uuid: str
+    last_bbox: tuple[int, int, int, int]
+    last_center: tuple[float, float]
+    deleted_at: float
+    last_person_id: str
+
+
 # ── Internal Track ────────────────────────────────────────────────────────────
 
 class _Track:
     """Internal state for one tracked person (not exposed outside this module)."""
 
-    def __init__(self, detection: Detection, zone: Optional[Zone], next_id_source: list[int]) -> None:
+    def __init__(
+        self,
+        detection: Detection,
+        zone: Optional[Zone],
+        next_id_source: list[int],
+        track_uuid: Optional[str] = None,
+    ) -> None:
         self.track_id      = next_id_source[0]
         next_id_source[0] += 1
+
+        # Use provided track_uuid (re-identification) or generate new one
+        self.track_uuid    = track_uuid or uuid.uuid4().hex[:12]
 
         x1, y1, x2, y2    = detection.bbox
         self.cx            = float((x1 + x2) / 2)
@@ -152,6 +150,8 @@ class _Track:
         self.zone:          Optional[Zone] = zone
         self.zone_entry_time: float = time.time()
         self.prev_zone_id:  Optional[str] = None
+
+        self.created_at: float = time.monotonic()  # for lifetime computation
 
     # ── Kalman-style prediction ───────────────────────────────────────────────
 
@@ -181,7 +181,7 @@ class _Track:
         self.hits      += 1
         self.misses     = 0
 
-        if self.hits >= MIN_HITS_TO_CONFIRM:
+        if self.hits >= PersonTracker.MIN_HITS:
             self.confirmed = True
 
         # Update zone
@@ -335,13 +335,15 @@ class PersonTracker:
     """
 
     # Tunable constants
-    IOU_THRESHOLD            = 0.35   # minimum IoU to match detection to track
-    MAX_MISSES               = 3      # frames without detection before deleting track
-    MIN_HITS                 = MIN_HITS_TO_CONFIRM  # publish immediately (was 3 — slowed initial appearance)
-    FRAME_VISIBILITY_THRESHOLD = 0.35 # minimum fraction of bbox that must be
+    IOU_THRESHOLD            = 0.20   # minimum IoU to match detection to track (relaxed for occlusion recovery)
+    MAX_MISSES               = 10     # frames without detection before deleting track (~2s at 10fps)
+    MIN_HITS                 = 3      # confirmations required before publishing (reduces ghost tracks)
+    FRAME_VISIBILITY_THRESHOLD = 0.15 # minimum fraction of bbox that must be
                                       # visible inside the frame — below this
                                       # the track is deleted immediately
     EDGE_MARGIN              = 3      # pixels from frame edge to consider "touching edge"
+    REIDENTIFY_IOU_THRESHOLD = 0.30   # minimum IoU to re-identify a recently deleted track
+    REIDENTIFY_TIME_LIMIT   = 5.0    # seconds to keep recently deleted tracks for re-identification
 
     def __init__(self, camera_id: str, debug_dir: Optional[str] = None) -> None:
         self.camera_id = camera_id
@@ -349,8 +351,21 @@ class PersonTracker:
         self._frame_n: int = 0
         # Each tracker gets its own ID counter (was a class-level global before)
         self._next_id: list[int] = [1]
+        # Recently deleted tracks — used for track_uuid re-identification
+        self._recently_deleted: deque[_RecentTrack] = deque(maxlen=50)
+        # Audit counters
+        self._track_lifetime_total: float = 0.0
+        self._track_lifetime_count: int = 0
+        self._track_lifetimes: list[float] = []
+        self._id_switches_per_minute: list[float] = []
+        self._tracks_deleted_before_vlm: int = 0
         self._debug_dir = debug_dir
-        logger.info(f"[{camera_id}] PersonTracker initialised")
+        logger.info(
+            f"[{camera_id}] PersonTracker initialised "
+            f"MAX_MISSES={self.MAX_MISSES} MIN_HITS={self.MIN_HITS} "
+            f"IOU_THRESHOLD={self.IOU_THRESHOLD} "
+            f"VISIBILITY={self.FRAME_VISIBILITY_THRESHOLD}"
+        )
 
     def update(
         self,
@@ -447,22 +462,55 @@ class PersonTracker:
             self._tracks[ti].mark_missed()
 
         # ── 6. Create new tracks for unmatched detections ─────────────────────
+        n_reidentified = 0
         for di in unmatched_d:
             det  = detections[di]
             zone = self._get_zone(det)
-            self._tracks.append(_Track(det, zone, self._next_id))
-            logger.debug(
-                f"[{self.camera_id}] New track P-{self._next_id[0] + 999} "
-                f"(conf={det.confidence:.3f})"
-            )
+
+            # Check recently_deleted for re-identification
+            reid_uuid = self._match_recently_deleted(det)
+            if reid_uuid is not None:
+                n_reidentified += 1
+                self._tracks.append(_Track(det, zone, self._next_id, track_uuid=reid_uuid))
+                logger.info(
+                    f"[{self.camera_id}] REIDENTIFIED track_uuid={reid_uuid} "
+                    f"(matched by position to recently deleted track)"
+                )
+            else:
+                self._tracks.append(_Track(det, zone, self._next_id))
 
         # ── 7. Delete tracks missing too long ─────────────────────────────────
         n_before_delete = len(self._tracks)
+        deleted_tracks = [t for t in self._tracks if t.misses >= self.MAX_MISSES]
         self._tracks = [t for t in self._tracks if t.misses < self.MAX_MISSES]
         n_deleted = n_before_delete - len(self._tracks)
 
+        # Save deleted tracks to recently_deleted buffer
+        now = time.monotonic()
+        for t in deleted_tracks:
+            bbox = t.bbox
+            cx = (bbox[0] + bbox[2]) / 2.0
+            cy = (bbox[1] + bbox[3]) / 2.0
+            self._recently_deleted.append(_RecentTrack(
+                track_uuid=t.track_uuid,
+                last_bbox=bbox,
+                last_center=(cx, cy),
+                deleted_at=now,
+                last_person_id=f"P-{t.track_id + 1000}",
+            ))
+            # Track lifetime for audit
+            if t.hits >= PersonTracker.MIN_HITS:
+                lifetime = now - t.created_at
+                self._track_lifetime_total += lifetime
+                self._track_lifetime_count += 1
+                self._track_lifetimes.append(lifetime)
+                self._tracks_deleted_before_vlm += 1
+
+        # Prune expired recently_deleted entries
+        self._prune_recently_deleted(now)
+
         # ── Track lifecycle summary ────────────────────────────────────────────
-        n_new_tracks = len(unmatched_d)
+        n_new_tracks = len(unmatched_d) - n_reidentified
         n_matched = len(matches)
         n_missed = len(unmatched_t)
         n_confirmed = sum(1 for t in self._tracks if t.confirmed)
@@ -472,6 +520,7 @@ class PersonTracker:
             f"dets_in={n_input_dets} "
             f"matched={n_matched} "
             f"new_tracks={n_new_tracks} "
+            f"reidentified={n_reidentified} "
             f"missed={n_missed} "
             f"deleted={n_deleted} "
             f"total_tracks={len(self._tracks)} "
@@ -487,6 +536,7 @@ class PersonTracker:
             zone = t.zone
             result.append(TrackedPerson(
                 track_id=     t.track_id,
+                track_uuid=   t.track_uuid,
                 bbox=         t.bbox,
                 confidence=   t.confidence,
                 zone_id=      zone.zone_id      if zone else "unknown",
@@ -544,8 +594,36 @@ class PersonTracker:
     def reset(self) -> None:
         """Clear all tracks (e.g. when stream reconnects)."""
         self._tracks.clear()
+        self._recently_deleted.clear()
         self._next_id = [1]
-        logger.info(f"[{self.camera_id}] Tracker reset (ID counter reset)")
+        logger.info(f"[{self.camera_id}] Tracker reset (ID counter cleared)")
+
+    def _match_recently_deleted(self, detection: Detection) -> Optional[str]:
+        """
+        Check if *detection* matches a recently deleted track.
+        Returns the track_uuid if a match is found, None otherwise.
+        """
+        best_uuid: Optional[str] = None
+        best_iou = 0.0
+        for recent in self._recently_deleted:
+            iou = _iou(recent.last_bbox, detection.bbox)
+            if iou > best_iou and iou >= self.REIDENTIFY_IOU_THRESHOLD:
+                best_iou = iou
+                best_uuid = recent.track_uuid
+        if best_uuid:
+            logger.debug(
+                f"[{self.camera_id}] Re-identifying det {detection.bbox} "
+                f"→ track_uuid={best_uuid} (iou={best_iou:.3f})"
+            )
+        return best_uuid
+
+    def _prune_recently_deleted(self, now: float) -> None:
+        """Remove expired entries from recently_deleted buffer."""
+        self._recently_deleted = deque(
+            (r for r in self._recently_deleted
+             if now - r.deleted_at < self.REIDENTIFY_TIME_LIMIT),
+            maxlen=50,
+        )
 
     def _get_zone(self, det: Detection) -> Optional[Zone]:
         """Find which zone this detection's feet fall in."""
@@ -553,6 +631,24 @@ class PersonTracker:
         fx = (x1 + x2) // 2
         fy = y2   # feet = bottom center
         return get_zone_for_point(self.camera_id, fx, fy)
+
+    def get_audit_metrics(self) -> dict:
+        """Return tracker audit metrics for reporting."""
+        avg_lifetime = (self._track_lifetime_total / max(self._track_lifetime_count, 1))
+        sorted_lts = sorted(self._track_lifetimes)
+        n = len(sorted_lts)
+        median = sorted_lts[n // 2] if n > 0 else 0.0
+        now_ = time.monotonic()
+        id_switches = sum(1 for r in self._recently_deleted if now_ - r.deleted_at < 60)
+        return {
+            "average_track_lifetime_s": round(avg_lifetime, 2),
+            "median_track_lifetime_s": round(median, 2),
+            "track_lifetime_count": self._track_lifetime_count,
+            "id_switches_per_minute": id_switches,
+            "tracks_deleted_before_vlm": self._tracks_deleted_before_vlm,
+            "active_tracks": len(self._tracks),
+            "recently_deleted_buffer_size": len(self._recently_deleted),
+        }
 
     @property
     def active_track_count(self) -> int:

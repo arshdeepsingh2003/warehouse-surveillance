@@ -11,9 +11,13 @@ interface Props {
 
 const STREAM_BASE = (import.meta as any).env?.VITE_STREAM_URL ?? 'http://localhost:8002'
 
+const isFallbackDesc = (desc: string) =>
+  desc.includes('VLM analysis unavailable') || desc.includes('Person detected in')
+
 export function PersonDetailPanel({ personId, cameraId, onClose }: Props) {
   const latestByPerson = useVLMStore(s => s.latestByPerson)
-  const insight = latestByPerson[personId]
+  const rawInsight = latestByPerson[personId]
+  const insight = rawInsight && !isFallbackDesc(rawInsight.description ?? '') ? rawInsight : null
 
   const ts = useMemo(() => {
     if (!insight?.timestamp) return null

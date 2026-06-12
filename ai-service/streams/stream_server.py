@@ -116,6 +116,13 @@ def create_stream_app(processor) -> FastAPI:
             return Response(status_code=404, content=f"No frames yet for {camera_id}")
         return Response(content=jpeg, media_type="image/jpeg")
 
+    @app.get("/vlm/metrics")
+    async def vlm_metrics():
+        """VLM metrics (event-driven engine stats)."""
+        if not _processor or not hasattr(_processor, '_event_engine'):
+            return {"error": "Event engine not available"}
+        return _processor._event_engine.get_metrics()
+
     @app.get(
         "/crop/{camera_id}/{person_id}",
         responses={200: {"content": {"image/jpeg": {}}}, 404: {"description": "Crop not found"}},

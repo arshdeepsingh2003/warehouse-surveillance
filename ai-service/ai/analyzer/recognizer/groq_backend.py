@@ -58,7 +58,11 @@ class GroqBackend(BaseActivityBackend):
         results: list[ActivityResult] = []
         for person in persons:
             vlm = await self._query_vlm(frame, person, camera_id)
-            results.append(self._vlm_to_activity(vlm, person))
+            if vlm is None:
+                # HARD RULE: fallback — use a minimal safe result
+                results.append(self._empty_result(person))
+            else:
+                results.append(self._vlm_to_activity(vlm, person))
         return results
 
     async def _query_vlm(
@@ -86,6 +90,14 @@ class GroqBackend(BaseActivityBackend):
             zone_name=person.zone_name,
             is_restricted=person.is_restricted,
         )
+        # HARD RULE: never cache or use fallback results
+        if vlm.backend_used == "fallback":
+            logger.warning(
+                f"[FALLBACK-TRACE] person_id={person.person_id} camera_id={camera_id} "
+                f"reason=groq_backend_received_fallback "
+                f"desc=\"{vlm.description[:60]}\""
+            )
+            return None
         self._cache[tid] = (now, vlm)
         return vlm
 
@@ -105,4 +117,20 @@ class GroqBackend(BaseActivityBackend):
             zone_name=person.zone_name,
             dwell_time=person.dwell_time,
             backend_used=vlm.backend_used if vlm.backend_used else "groq",
+        )
+
+    def _empty_result(self, person: TrackedPerson) -> ActivityResult:
+        """Return a minimal safe result when VLM returns fallback."""
+        return ActivityResult(
+            person_id=person.person_id,
+            track_id=person.track_id,
+            activity_type="unknown",
+            anomaly_label="normal",
+            description="",
+            confidence=0.0,
+            flags=[],
+            zone_id=person.zone_id,
+            zone_name=person.zone_name,
+            dwell_time=person.dwell_time,
+            backend_used="groq_fallback",
         )

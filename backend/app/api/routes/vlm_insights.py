@@ -110,3 +110,34 @@ async def ingest_vlm_insight(data: VLMInsightIngest):
     )
 
     return {"status": "ok", "id": data.id}
+
+
+@router.get("/metrics", summary="VLM event engine metrics")
+async def vlm_metrics():
+    """
+    Return VLM event-driven engine metrics.
+    The AI service at port 8001 serves the live metrics.
+    This endpoint returns a summary of stored VLM insight counts.
+    """
+    return {
+        "total_insights_stored": len(MOCK_VLM_INSIGHTS),
+        "anomaly_insights": sum(
+            1 for i in MOCK_VLM_INSIGHTS if i.get("anomaly_label") == "anomaly"
+        ),
+        "backends_used": list(set(
+            i.get("backend_used", "unknown") for i in MOCK_VLM_INSIGHTS
+        )),
+        "note": "Live EventEngine metrics available at AI service /vlm/metrics",
+    }
+
+
+@router.post("/clear", status_code=200)
+async def clear_vlm_insights():
+    """
+    Clear all in-memory VLM insights.
+    Useful for resetting state between test runs or after reconfiguring the AI service.
+    """
+    count = len(MOCK_VLM_INSIGHTS)
+    MOCK_VLM_INSIGHTS.clear()
+    logger.info(f"Cleared {count} VLM insights from memory")
+    return {"status": "ok", "cleared": count}

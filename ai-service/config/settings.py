@@ -53,6 +53,14 @@ class Settings(BaseSettings):
     def loitering_radius(self) -> float:
         return self.LOITERING_RADIUS
 
+    # ── Event-Driven VLM Architecture ──────────────────────────────────────────
+    # When enabled, VLM is only triggered on meaningful events, not every frame.
+    USE_EVENT_DRIVEN_VLM: bool = True
+    EVENT_VLM_COOLDOWN:      float = 60.0    # seconds between VLM calls per person
+    EVENT_VLM_CACHE_TTL:     float = 60.0    # seconds before cache entry expires
+    EVENT_VLM_RATE_LIMIT:    int   = 1       # max VLM requests per second (global)
+    EVENT_VLM_DEGRADED_BACKOFF: int = 300    # seconds to disable VLM on 429
+
     # ── Activity Recognition ──────────────────────────────────────────────────
     ACTIVITY_BACKEND: str = "rules"  # "rules" | "groq" | "hybrid" | "mock"
 
@@ -73,9 +81,10 @@ class Settings(BaseSettings):
     LLM_MODEL:       str = "llama-3.3-70b-versatile"
     GROQ_VLM_MODEL:  str = "meta-llama/llama-4-scout-17b-16e-instruct"
     VLM_MODEL:       str = ""
-    VLM_EVERY_N_FRAMES:        int = 30
+    VLM_EVERY_N_FRAMES:        int = 10
     VLM_MAX_PERSONS_PER_FRAME: int = 5
     VLM_JPEG_QUALITY:          int = 75
+    SAVE_DEBUG_CROPS:          bool = False
     VLM_CACHE_TTL_SECONDS:     int = 300
     VLM_MOCK_LATENCY_MS:       int = 80
 

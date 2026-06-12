@@ -123,6 +123,14 @@ class HybridBackend(BaseActivityBackend):
                     f"Dwell time: {person.dwell_time:.0f}s."
                 ),
             )
+            # HARD RULE: never cache or use fallback results
+            if vlm.backend_used == "fallback":
+                logger.warning(
+                    f"[FALLBACK-TRACE] person_id={person.person_id} camera_id={camera_id} "
+                    f"reason=hybrid_backend_received_fallback "
+                    f"desc=\"{vlm.description[:60]}\""
+                )
+                return None
             self._cache[tid] = (now, vlm)
             return vlm
         except Exception as e:

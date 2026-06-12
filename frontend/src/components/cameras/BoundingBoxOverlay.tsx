@@ -44,8 +44,26 @@ export function BoundingBoxOverlay({ cameraId, persons, onPersonClick }: Props) 
     >
       {persons.map((person) => {
         const activeHighAlert = highAlertPersonIds.has(person.person_id)
-        const vlm = latestByPerson[person.person_id]
+        // Prefer VLM data from frame_update payload (avoids person_id race),
+        // fall back to vlmStore WS vlm_insight events
+        // HARD RULE: ignore fallback descriptions at the overlay level
+        const isFallback = (desc: string, backend?: string) =>
+          backend === 'fallback' || desc.includes('VLM analysis unavailable') || desc.includes('Person detected in')
+        const vlmFromFrame = person.vlm_description && !isFallback(person.vlm_description, person.vlm_backend_used)
+          ? { description: person.vlm_description, anomaly_label: person.vlm_anomaly_label ?? 'normal' }
+          : null
+        const vlmFromStore = latestByPerson[person.person_id]
+        const storeDesc = vlmFromStore?.description ?? ''
+        const storeBackend = vlmFromStore?.backend_used ?? ''
+        const vlm = (vlmFromFrame ?? (vlmFromStore && !isFallback(storeDesc, storeBackend) ? vlmFromStore : null))
         const isAnomaly = vlm?.anomaly_label === 'anomaly'
+        const vlmDesc = vlm?.description ?? ''
+        console.log(
+          `[VLM-TRACE] ${person.person_id} OVERLAY_UPDATED `
+          + `frame_vlm=${Boolean(vlmFromFrame)} store_vlm=${Boolean(vlmFromStore)} `
+          + `backend=${storeBackend} `
+          + `overlay_summary="${vlmDesc.slice(0, 80)}"`
+        )
 
         let color: string
         if (activeHighAlert) {
@@ -66,7 +84,7 @@ export function BoundingBoxOverlay({ cameraId, persons, onPersonClick }: Props) 
 
         const width = x2 - x1
 
-        const descText = vlm ? `"${truncate(vlm.description, MAX_DESC_LEN)}"` : 'Analyzing...'
+        const descText = vlm ? `"${truncate(vlm.description, MAX_DESC_LEN)}"` : 'AI analysis pending...'
         const labelH = 38
         const labelY = Math.max(0, y1 - labelH - 2)
 

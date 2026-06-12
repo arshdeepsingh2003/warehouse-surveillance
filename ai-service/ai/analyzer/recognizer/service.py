@@ -48,7 +48,16 @@ class ActivityRecognizer:
         if self._backend is not None:
             return self._backend
 
-        mode = settings.ACTIVITY_BACKEND
+        # Event-driven mode forces rules-only backend (VLM handled by EventEngine)
+        if settings.USE_EVENT_DRIVEN_VLM and settings.ACTIVITY_BACKEND in ("groq", "hybrid"):
+            mode = "rules"
+            logger.info(
+                f"[{self._camera_id}] Event-driven VLM active: forcing backend to 'rules' "
+                f"(was '{settings.ACTIVITY_BACKEND}')"
+            )
+        else:
+            mode = settings.ACTIVITY_BACKEND
+
         backend_cls = _BACKEND_MAP.get(mode)
 
         if backend_cls is not None:

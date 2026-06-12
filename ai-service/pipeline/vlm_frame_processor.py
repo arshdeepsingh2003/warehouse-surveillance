@@ -71,7 +71,7 @@ class _CameraPipelineVLM:
         self.vlm_skip_counter     = 0
         self._last_persons:       list[TrackedPerson] = []
         self._last_activities:    list[ActivityResult] = []
-        # VLM results per person (person_id → VLMResult)
+        # VLM results per person (track_uuid → VLMResult)
         self._vlm_results:        dict[str, VLMResult] = {}
 
 
@@ -171,15 +171,15 @@ class VLMFrameProcessor:
 
             for person, result in zip(persons, vlm_results):
                 if isinstance(result, VLMResult):
-                    pipe._vlm_results[person.person_id] = result
+                    pipe._vlm_results[person.track_uuid] = result
 
         # ── Step 3: Activity analysis (CV rules + optional VLM merge) ─────────
         if run_cv:
             activities = await pipe.recognizer.analyze(frame, persons, cam_id, carryable)
 
-            # Merge VLM descriptions into rule-based results
+            # Merge VLM descriptions into rule-based results (lookup by track_uuid)
             for act in activities:
-                vlm = pipe._vlm_results.get(act.person_id)
+                vlm = pipe._vlm_results.get(act.track_uuid) or pipe._vlm_results.get(act.person_id)
                 if vlm:
                     act.description = vlm.description
                     # VLM overrides anomaly if it detects something the rules missed
@@ -226,7 +226,7 @@ class VLMFrameProcessor:
         Returns VLMResult or None on error.
         """
         try:
-            return await self._vlm.analyze_person(
+            result = await self._vlm.analyze_person(
                 frame=         frame,
                 bbox=          person.bbox,
                 person_id=     person.person_id,
@@ -234,7 +234,17 @@ class VLMFrameProcessor:
                 zone_id=       person.zone_id,
                 zone_name=     person.zone_name,
                 is_restricted= person.is_restricted,
+                track_uuid=    person.track_uuid,
             )
+            # HARD RULE: never use fallback results
+            if result.backend_used == "fallback":
+                logger.warning(
+                    f"[FALLBACK-TRACE] person_id={person.person_id} camera_id={pipe.camera_id} "
+                    f"reason=vlm_frame_processor_received_fallback "
+                    f"desc=\"{result.description[:60]}\""
+                )
+                return None
+            return result
         except Exception as e:
             logger.debug(f"VLM error for {person.person_id}: {e}")
             return None

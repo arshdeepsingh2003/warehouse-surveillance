@@ -150,6 +150,7 @@ class AlertEvent:
     zone_name:   str
     confidence:  float
     dwell_time:  float
+    track_uuid:  str    = ""    # stable UUID for VLM cache lookup
     flags:       list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -231,6 +232,7 @@ class RulesEngine:
                     severity=    rule.severity,
                     description= desc,
                     person_id=   result.person_id,
+                    track_uuid=  result.track_uuid,
                     camera_id=   self.camera_id,
                     zone_id=     result.zone_id,
                     zone_name=   result.zone_name,

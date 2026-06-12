@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import inspect
 import json
 import logging
 import os
@@ -55,6 +56,12 @@ import numpy as np
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
+
+
+class RateLimitError(Exception):
+    """Raised when the VLM backend returns HTTP 429 (rate limited)."""
+    pass
+
 
 # Short backend names for frontend display
 _BACKEND_SHORT_NAMES: dict[str, str] = {
@@ -618,6 +625,8 @@ class VLMClient:
         self._backend = _build_backend(settings.VLM_BACKEND)
         # Simple in-memory response cache: key = (person_id, zone_id) → (timestamp, result)
         self._cache: dict[str, tuple[float, VLMResult]] = {}
+        # Global concurrency throttle — max 3 concurrent Groq API calls
+        self._semaphore = asyncio.Semaphore(3)
 
     async def warmup(self) -> None:
         await self._backend.warmup()
@@ -632,6 +641,7 @@ class VLMClient:
         zone_name:   str,
         is_restricted: bool = False,
         extra_context: str = "",
+        track_uuid:  Optional[str] = None,
     ) -> VLMResult:
         """
         Analyze one tracked person's behavior using the VLM.
@@ -645,21 +655,36 @@ class VLMClient:
             zone_name:     Human-readable zone name
             is_restricted: Whether the zone is a restricted area
             extra_context: Any additional context to include in the prompt
+            track_uuid:    Stable UUID for cache key continuity (preferred over person_id)
 
         Returns:
             VLMResult with description, activity type, anomaly label
         """
         # Check cache (avoid querying VLM if person/zone unchanged recently)
-        cache_key = f"{person_id}:{zone_id}"
+        cache_key = f"{track_uuid or person_id}:{zone_id}"
         if cache_key in self._cache:
             cached_at, cached_result = self._cache[cache_key]
             if time.time() - cached_at < settings.VLM_CACHE_TTL_SECONDS:
-                logger.debug(f"VLM cache hit: {cache_key}")
-                return cached_result
+                # HARD RULE: never return cached fallback
+                if cached_result.backend_used == "fallback":
+                    logger.warning(
+                        f"[FALLBACK-TRACE] person_id={person_id} camera_id={camera_id} "
+                        f"reason=cached_fallback_evicted "
+                        f"cache_key={cache_key}"
+                    )
+                    del self._cache[cache_key]
+                else:
+                    logger.debug(f"VLM cache hit: {cache_key}")
+                    return cached_result
 
         # Crop person from frame
         crop = crop_person(frame, bbox, padding=30)
         if crop.shape[0] < 20 or crop.shape[1] < 20:
+            logger.warning(
+                f"[FALLBACK-TRACE] person_id={person_id} camera_id={camera_id} "
+                f"reason=crop_too_small "
+                f"crop_shape={crop.shape}"
+            )
             return self._fallback_result(person_id, camera_id, zone_id, zone_name)
 
         # Build context-aware prompt
@@ -674,10 +699,17 @@ class VLMClient:
             raw = await self._backend.query(image_b64, prompt)
             latency_ms = int((time.monotonic() - t0) * 1000)
         except Exception as e:
-            logger.error(f"VLM query error for {person_id}: {e}")
+            logger.error(
+                f"[FALLBACK-TRACE] person_id={person_id} camera_id={camera_id} "
+                f"reason=VLM_query_exception error={e}"
+            )
             return self._fallback_result(person_id, camera_id, zone_id, zone_name)
 
         if not raw:
+            logger.warning(
+                f"[FALLBACK-TRACE] person_id={person_id} camera_id={camera_id} "
+                f"reason=empty_vlm_response"
+            )
             return self._fallback_result(person_id, camera_id, zone_id, zone_name)
 
         # Parse response
@@ -687,12 +719,27 @@ class VLMClient:
             latency_ms=latency_ms,
         )
 
-        # Cache the result
+        # HARD RULE: never cache fallback results
+        if result.backend_used == "fallback":
+            logger.warning(
+                f"[FALLBACK-TRACE] person_id={person_id} camera_id={camera_id} "
+                f"reason=parse_returned_fallback "
+                f"raw_preview={raw[:100]}"
+            )
+            return result
+
+        # Cache the result (only non-fallback)
         self._cache[cache_key] = (time.time(), result)
         logger.info(
             f"[VLM] {person_id} @ {zone_name}: "
             f"{'⚠ ANOMALY' if result.is_anomaly else 'normal'} | "
             f"{latency_ms}ms | {result.description[:60]}…"
+        )
+        logger.info(
+            f"[GROQ-TRACE] person_id={person_id} camera_id={camera_id} "
+            f"raw_response=\"{raw[:300]}\" "
+            f"parsed_description=\"{result.description[:200]}\" "
+            f"overlay_summary=\"{result.description[:120]}\""
         )
         return result
 
@@ -877,6 +924,15 @@ class VLMClient:
         self, person_id: str, camera_id: str, zone_id: str, zone_name: str
     ) -> VLMResult:
         """Return a safe default when VLM call fails."""
+        # Build a compact call-stack snippet (last 3 frames after this one)
+        stack = "|".join(
+            f"{f.filename}:{f.lineno}"
+            for f in inspect.stack()[1:4]
+        )
+        logger.warning(
+            f"[FALLBACK-TRACE] person_id={person_id} camera_id={camera_id} "
+            f"reason=VLM_call_failed call_stack=[{stack}]"
+        )
         return VLMResult(
             person_id=     person_id,
             camera_id=     camera_id,
@@ -893,65 +949,97 @@ class VLMClient:
         self,
         crop_path:   str,
         metadata:    dict,
+        crop_array:  Optional[np.ndarray] = None,
+        enqueue_ts:  Optional[float] = None,
     ) -> VLMResult:
         """
-        Analyze a previously saved crop image from disk.
-
-        This is the VLM interface abstraction required by the next-gen
-        pipeline.  It decouples crop generation (CropManager) from VLM
-        inference so that crops can be cached, inspected, or reprocessed
-        without re-running detection/tracking.
+        Analyze a person crop image — supports both in-memory and disk paths.
 
         Args:
-            crop_path:  Absolute path to a JPEG crop file on disk.
-            metadata:   Dict with at minimum:
+            crop_path:   Absolute path to a JPEG crop file on disk (used only
+                         when *crop_array* is not provided).
+            metadata:    Dict with at minimum:
                             person_id     – str
                             camera_id     – str
                             zone_id       – str
                             zone_name     – str
                             is_restricted – bool
                             extra_context – str (optional rule context)
+            crop_array:  In-memory BGR numpy array of the crop (fast path,
+                         avoids disk read). Takes precedence over crop_path.
+            enqueue_ts:  time.monotonic() timestamp when the VLM task was first
+                         queued by the pipeline. Used to compute QUEUE_WAIT_MS.
 
         Returns:
             VLMResult  (same schema as analyze_person)
         """
+        total_t0 = time.monotonic()
         person_id     = metadata.get("person_id",     "unknown")
+        track_uuid    = metadata.get("track_uuid",    person_id)  # prefer stable UUID
         camera_id     = metadata.get("camera_id",     "unknown")
         zone_id       = metadata.get("zone_id",       "unknown")
         zone_name     = metadata.get("zone_name",     "Unknown")
         is_restricted = metadata.get("is_restricted", False)
         extra_context = metadata.get("extra_context", "")
 
-        # Check cache
-        cache_key = f"{person_id}:{zone_id}"
+        # Compute queue wait (time spent in asyncio queue before semaphore acquire)
+        queue_wait_ms = 0
+        if enqueue_ts is not None:
+            queue_wait_ms = int((total_t0 - enqueue_ts) * 1000)
+
+        # Check cache (keyed by track_uuid for stable lookup across ID regeneration)
+        cache_key = f"{track_uuid}:{zone_id}"
         if cache_key in self._cache:
             cached_at, cached_result = self._cache[cache_key]
             if time.time() - cached_at < settings.VLM_CACHE_TTL_SECONDS:
-                logger.debug(f"VLM cache hit: {cache_key}")
-                return cached_result
+                # HARD RULE: never return cached fallback
+                if cached_result.backend_used == "fallback":
+                    logger.warning(
+                        f"[FALLBACK-TRACE] person_id={person_id} camera_id={camera_id} "
+                        f"reason=cached_fallback_evicted "
+                        f"cache_key={cache_key}"
+                    )
+                    del self._cache[cache_key]
+                else:
+                    logger.debug(f"VLM cache hit: {cache_key}")
+                    return cached_result
 
-        # Read crop from disk
-        if not os.path.isfile(crop_path):
-            logger.warning(f"Crop file not found: {crop_path}")
-            return self._fallback_result(person_id, camera_id, zone_id, zone_name)
-
-        try:
-            crop = cv2.imread(crop_path)
-            if crop is None or crop.size == 0:
-                logger.warning(f"Empty crop at: {crop_path}")
+        # Get crop array: prefer in-memory, fall back to disk
+        if crop_array is not None:
+            crop = crop_array
+        else:
+            if not os.path.isfile(crop_path):
+                logger.warning(
+                    f"[FALLBACK-TRACE] person_id={person_id} camera_id={camera_id} "
+                    f"reason=crop_file_not_found path={crop_path}"
+                )
                 return self._fallback_result(person_id, camera_id, zone_id, zone_name)
-        except Exception as e:
-            logger.warning(f"Failed to read crop {crop_path}: {e}")
-            return self._fallback_result(person_id, camera_id, zone_id, zone_name)
+            try:
+                crop = cv2.imread(crop_path)
+                if crop is None or crop.size == 0:
+                    logger.warning(
+                        f"[FALLBACK-TRACE] person_id={person_id} camera_id={camera_id} "
+                        f"reason=empty_crop path={crop_path}"
+                    )
+                    return self._fallback_result(person_id, camera_id, zone_id, zone_name)
+            except Exception as e:
+                logger.warning(
+                    f"[FALLBACK-TRACE] person_id={person_id} camera_id={camera_id} "
+                    f"reason=crop_read_error path={crop_path} error={e}"
+                )
+                return self._fallback_result(person_id, camera_id, zone_id, zone_name)
 
         if crop.shape[0] < 20 or crop.shape[1] < 20:
+            logger.warning(
+                f"[FALLBACK-TRACE] person_id={person_id} camera_id={camera_id} "
+                f"reason=crop_too_small crop_shape={crop.shape}"
+            )
             return self._fallback_result(person_id, camera_id, zone_id, zone_name)
 
         # Detect backend type for prompt selection
-        is_qwen     = isinstance(self._backend, QwenVLMBackend)
+        is_qwen      = isinstance(self._backend, QwenVLMBackend)
         is_moondream = isinstance(self._backend, MoondreamVLMBackend)
 
-        # Build prompt from metadata (specialised backends use their own prompt)
         if is_qwen:
             prompt = QwenVLMBackend.PROMPT
         elif is_moondream:
@@ -962,48 +1050,90 @@ class VLMClient:
         # Encode
         image_b64 = encode_frame_b64(crop, quality=settings.VLM_JPEG_QUALITY)
 
-        # Query VLM
-        t0 = time.monotonic()
-        try:
-            raw = await self._backend.query(image_b64, prompt)
-            latency_ms = int((time.monotonic() - t0) * 1000)
-        except Exception as e:
-            logger.error(f"VLM query error for {person_id}: {e}")
-            return self._fallback_result(person_id, camera_id, zone_id, zone_name)
+        # ── Throttled VLM query ────────────────────────────────────────────
+        async with self._semaphore:
+            groq_t0 = time.monotonic()
+            try:
+                logger.info(
+                    f"[GROQ-REQUEST] person_id={person_id} camera_id={camera_id} "
+                    f"prompt_preview={prompt[:120]}... "
+                    f"image_b64_len={len(image_b64)}"
+                )
+                raw = await self._backend.query(image_b64, prompt)
+                groq_latency_ms = int((time.monotonic() - groq_t0) * 1000)
+                logger.info(
+                    f"[GROQ-RESPONSE] person_id={person_id} camera_id={camera_id} "
+                    f"latency_ms={groq_latency_ms} "
+                    f"raw_response=\"{raw[:300]}\""
+                )
+            except Exception as e:
+                logger.error(
+                    f"[FALLBACK-TRACE] person_id={person_id} camera_id={camera_id} "
+                    f"reason=VLM_query_exception error={e}"
+                )
+                return self._fallback_result(person_id, camera_id, zone_id, zone_name)
 
         if not raw:
+            logger.warning(
+                f"[FALLBACK-TRACE] person_id={person_id} camera_id={camera_id} "
+                f"reason=empty_vlm_response"
+            )
             return self._fallback_result(person_id, camera_id, zone_id, zone_name)
 
+        # Parse
+        total_latency_ms = int((time.monotonic() - total_t0) * 1000)
         if is_qwen:
             result = self._parse_qwen_response(
                 raw=raw, person_id=person_id, camera_id=camera_id,
                 zone_id=zone_id, zone_name=zone_name,
-                latency_ms=latency_ms,
+                latency_ms=total_latency_ms,
             )
         else:
             result = self._parse_response(
                 raw=raw, person_id=person_id, camera_id=camera_id,
                 zone_id=zone_id, zone_name=zone_name,
-                latency_ms=latency_ms,
+                latency_ms=total_latency_ms,
             )
+
+        # HARD RULE: never cache fallback results
+        if result.backend_used == "fallback":
+            logger.warning(
+                f"[FALLBACK-TRACE] person_id={person_id} camera_id={camera_id} "
+                f"reason=parse_returned_fallback "
+                f"raw_preview={raw[:100]}"
+            )
+            return result
 
         self._cache[cache_key] = (time.time(), result)
 
-        # Detailed logging
-        log = (
+        # ── Latency metrics + Groq trace logging ───────────────────────────
+        logger.info(
             f"[VLM] camera={camera_id} person={person_id} "
-            f"crop={crop_path} backend={type(self._backend).__name__} "
-            f"latency={latency_ms}ms "
+            f"QUEUE_WAIT={queue_wait_ms}ms "
+            f"GROQ_LATENCY={groq_latency_ms}ms "
+            f"TOTAL_VLM_LATENCY={total_latency_ms}ms "
+            f"backend={type(self._backend).__name__} "
             f"activity={result.activity_type} "
             f"anomaly={result.anomaly_label} "
             f"confidence={result.confidence:.2f} "
             f"desc=\"{result.description[:80]}\""
         )
+        logger.info(
+            f"[GROQ-TRACE] person_id={person_id} camera_id={camera_id} "
+            f"raw_response=\"{raw[:300]}\" "
+            f"parsed_description=\"{result.description[:200]}\" "
+            f"overlay_summary=\"{result.description[:120]}\""
+        )
         if is_qwen:
             obj_str = ",".join(result.objects_detected) if result.objects_detected else "none"
-            log += f" objects=[{obj_str}]"
-        logger.info(log)
+            logger.info(f"[VLM] camera={camera_id} person={person_id} objects=[{obj_str}]")
         return result
+
+    def clear_cache(self) -> None:
+        """Clear the in-memory VLM result cache."""
+        n = len(self._cache)
+        self._cache.clear()
+        logger.info(f"[VLM] Cleared {n} cached entries")
 
     def get_cache_stats(self) -> dict:
         return {
@@ -1037,19 +1167,38 @@ class GroqVLMBackend(BaseVLMBackend):
         logger.info(f"Groq VLM backend ready: {model}")
 
     async def query(self, image_b64: str, prompt: str) -> str:
-        response = await self._client.chat.completions.create(
-            model=      self._model,
-            max_tokens= 300,
-            temperature=0.2,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {
-                        "type":      "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
-                    },
-                    {"type": "text", "text": prompt},
-                ],
-            }],
+        logger.info(
+            f"[GROQ-REQUEST] model={self._model} "
+            f"prompt_preview={prompt[:120]}... "
+            f"image_b64_len={len(image_b64)}"
         )
-        return response.choices[0].message.content.strip()
+        t0 = time.monotonic()
+        try:
+            response = await self._client.chat.completions.create(
+                model=      self._model,
+                max_tokens= 300,
+                temperature=0.2,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type":      "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
+                        },
+                        {"type": "text", "text": prompt},
+                    ],
+                }],
+            )
+            latency_ms = int((time.monotonic() - t0) * 1000)
+            raw_text = response.choices[0].message.content.strip()
+            logger.info(
+                f"[GROQ-RESPONSE] latency_ms={latency_ms} "
+                f"raw_response={raw_text[:200]}"
+            )
+            return raw_text
+        except Exception as e:
+            if hasattr(e, 'status_code') and e.status_code == 429:
+                raise RateLimitError("Groq HTTP 429 rate limit exceeded") from e
+            if hasattr(e, 'status') and e.status == 429:
+                raise RateLimitError("Groq HTTP 429 rate limit exceeded") from e
+            raise

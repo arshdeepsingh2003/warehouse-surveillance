@@ -42,7 +42,12 @@ export function useWebSocket() {
         switch (data.type) {
           case 'frame_update':
             if (data.camera_id && data.persons) {
-              console.log(`🔍 TRACE[ws-receive] camera=${data.camera_id} persons=${data.persons.length} ids=[${data.persons.map((p: any) => p.person_id).join(', ')}] bboxes=[${data.persons.map((p: any) => JSON.stringify(p.bbox)).join('; ')}]`)
+              const vlmCount = data.persons.filter((p: any) => p.vlm_description).length
+              console.log(`🔍 TRACE[ws-receive] camera=${data.camera_id} persons=${data.persons.length} ids=[${data.persons.map((p: any) => p.person_id).join(', ')}] bboxes=[${data.persons.map((p: any) => JSON.stringify(p.bbox)).join('; ')}] vlm_in_frame=${vlmCount}`)
+              for (const p of data.persons) {
+                const vlmDesc = p.vlm_description ?? ''
+                console.log(`[VLM-TRACE] ${p.person_id} WS_RECEIVED has_vlm=${Boolean(vlmDesc)} overlay_summary="${vlmDesc.slice(0, 80)}"`)
+              }
               updateTracking(data.camera_id, data.persons, data.timestamp)
             } else {
               console.log(`🔍 TRACE[ws-receive] INCOMPLETE frame_update camera=${data.camera_id} has_persons=${Boolean(data.persons)}`)
@@ -113,7 +118,26 @@ export function useWebSocket() {
                 source:           data.source ?? 'vlm',
                 timestamp:        data.timestamp,
               }
+              // HARD RULE: block fallback descriptions at WS level
+              if (vlmInsight.backend_used === 'fallback' || 
+                  (vlmInsight.description ?? '').includes('VLM analysis unavailable') ||
+                  (vlmInsight.description ?? '').includes('Person detected in')) {
+                console.warn(
+                  `[FALLBACK-TRACE] ${data.person_id} WS_RECEIVED blocked fallback `
+                  + `backend=${vlmInsight.backend_used} `
+                  + `desc="${(vlmInsight.description ?? '').slice(0, 60)}"`
+                )
+                break
+              }
+              console.log(
+                `[VLM-TRACE] ${data.person_id} WS_RECEIVED (vlm_insight) `
+                + `latency=${vlmInsight.latency_ms}ms `
+                + `backend=${vlmInsight.backend_used} `
+                + `overlay_summary="${vlmInsight.description.slice(0, 80)}"`
+              )
               addVLMInsight(vlmInsight)
+            } else {
+              console.warn(`[VLM-TRACE] WS_RECEIVED missing person_id`)
             }
             break
 

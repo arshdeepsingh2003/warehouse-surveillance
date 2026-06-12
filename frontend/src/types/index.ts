@@ -168,6 +168,11 @@ export interface WSFramePerson {
   // Optional visual fields supplied by the AI service
   bbox?:         number[]   // [x1,y1,x2,y2]
   center?:       number[]   // [cx,cy]
+  // VLM enrichment from AI service (included in frame_update payload)
+  vlm_description?:   string
+  vlm_anomaly_label?: string
+  vlm_latency_ms?:    number
+  vlm_backend_used?:  string
 }
 
 export interface WSEvent {

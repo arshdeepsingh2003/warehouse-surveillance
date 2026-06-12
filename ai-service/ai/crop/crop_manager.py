@@ -48,7 +48,8 @@ logger = logging.getLogger(__name__)
 class CropRecord:
     """Metadata for one saved person crop."""
     track_id:     int
-    person_id:    str
+    track_uuid:   str    # stable UUID for VLM key continuity
+    person_id:    str    # display-only ID
     camera_id:    str
     timestamp:    str
     frame_number: int
@@ -86,10 +87,14 @@ class CropManager:
         self._cam_dir = os.path.join(self._crop_dir, camera_id)
         os.makedirs(self._cam_dir, exist_ok=True)
 
-        # In-memory metadata index: person_id → CropRecord (latest per person)
+        # In-memory metadata index: track_uuid → CropRecord (latest per person)
         self._latest: dict[str, CropRecord] = {}
+        # In-memory crop arrays (avoids disk round-trip for VLM pipeline)
+        self._crop_arrays: dict[str, np.ndarray] = {}
         # Ordered history for cleanup & retrieval (FIFO, bounded at 5000)
         self._history: deque[CropRecord] = deque(maxlen=5000)
+        # Fallback: person_id → track_uuid mapping for backward compat
+        self._person_to_uuid: dict[str, str] = {}
 
         self._cleanup_task: Optional[asyncio.Task] = None
 
@@ -105,6 +110,7 @@ class CropManager:
         frame:        np.ndarray,
         bbox:         tuple[int, int, int, int],
         track_id:     int,
+        track_uuid:   str,
         person_id:    str,
         timestamp:    str,
         frame_number: int,
@@ -112,6 +118,8 @@ class CropManager:
         """
         Extract the person region from *frame* at *bbox*, save as JPEG, and
         return a CropRecord with the full path.
+
+        Keyed by track_uuid for stable VLM lookup across tracker re-identification.
 
         The crop is saved to:
             {crop_dir}/{camera_id}/{person_id}_{safe_ts}.jpg
@@ -122,10 +130,16 @@ class CropManager:
         filename = f"{person_id}_{safe_ts}.jpg"
         filepath = os.path.join(self._cam_dir, filename)
 
-        cv2.imwrite(filepath, crop, [cv2.IMWRITE_JPEG_QUALITY, self._quality])
+        # Only write to disk when debug crops are enabled
+        if settings.SAVE_DEBUG_CROPS:
+            cv2.imwrite(filepath, crop, [cv2.IMWRITE_JPEG_QUALITY, self._quality])
+
+        # Always store in memory for VLM pipeline — keyed by track_uuid
+        self._crop_arrays[track_uuid] = crop
 
         record = CropRecord(
             track_id=     track_id,
+            track_uuid=   track_uuid,
             person_id=    person_id,
             camera_id=    self._camera_id,
             timestamp=    timestamp,
@@ -134,24 +148,38 @@ class CropManager:
             crop_path=    filepath,
         )
 
-        self._latest[person_id] = record
+        self._latest[track_uuid] = record
+        self._person_to_uuid[person_id] = track_uuid
         self._history.append(record)
 
         logger.debug(
-            f"[{self._camera_id}] Crop saved: {person_id} → {filepath} "
-            f"({bbox})"
+            f"[{self._camera_id}] Crop saved: {person_id} (uuid={track_uuid}) → {filepath} "
+            f"({bbox}, disk={'yes' if settings.SAVE_DEBUG_CROPS else 'no'})"
         )
 
         return record
 
-    def get_crop_path(self, person_id: str) -> Optional[str]:
-        """Return the crop path for the most recent crop of *person_id*."""
-        record = self._latest.get(person_id)
+    def get_crop_path(self, person_id: str, track_uuid: Optional[str] = None) -> Optional[str]:
+        """Return the crop path for the most recent crop."""
+        key = track_uuid or self._person_to_uuid.get(person_id)
+        if key is None:
+            return None
+        record = self._latest.get(key)
         return record.crop_path if record else None
 
-    def get_record(self, person_id: str) -> Optional[CropRecord]:
-        """Return the most recent CropRecord for *person_id*."""
-        return self._latest.get(person_id)
+    def get_crop_array(self, person_id: str, track_uuid: Optional[str] = None) -> Optional[np.ndarray]:
+        """Return the in-memory crop array (fast, no disk I/O)."""
+        key = track_uuid or self._person_to_uuid.get(person_id)
+        if key is None:
+            return None
+        return self._crop_arrays.get(key)
+
+    def get_record(self, person_id: str, track_uuid: Optional[str] = None) -> Optional[CropRecord]:
+        """Return the most recent CropRecord."""
+        key = track_uuid or self._person_to_uuid.get(person_id)
+        if key is None:
+            return None
+        return self._latest.get(key)
 
     def get_history(
         self,
@@ -255,11 +283,17 @@ class CropManager:
         )
         # Remove stale entries from latest index
         stale_ids = [
-            pid for pid, rec in self._latest.items()
+            uid for uid, rec in self._latest.items()
             if not os.path.isfile(rec.crop_path)
         ]
-        for pid in stale_ids:
-            self._latest.pop(pid, None)
+        for uid in stale_ids:
+            rec = self._latest.pop(uid, None)
+            if rec:
+                self._person_to_uuid.pop(rec.person_id, None)
+
+        # Prune in-memory crop arrays for cleaned-up persons
+        for uid in stale_ids:
+            self._crop_arrays.pop(uid, None)
 
         return removed
 
