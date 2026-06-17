@@ -24,3 +24,4 @@ ultralytics==8.2.0    # YOLOv8 person detection
 torch>=2.3.0          # PyTorch (GPU-accelerated inference)
 # deep-sort-realtime==1.3.2  # DeepSORT person re-identification (optional)
 # openai==1.30.0        # GPT-4V VLM queries (optional)
+groq>=0.30.0            # Groq Llama 4 Scout VLM queries

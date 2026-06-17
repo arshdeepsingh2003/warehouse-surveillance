@@ -118,21 +118,11 @@ export function useWebSocket() {
                 source:           data.source ?? 'vlm',
                 timestamp:        data.timestamp,
               }
-              // HARD RULE: block fallback descriptions at WS level
-              if (vlmInsight.backend_used === 'fallback' || 
-                  (vlmInsight.description ?? '').includes('VLM analysis unavailable') ||
-                  (vlmInsight.description ?? '').includes('Person detected in')) {
-                console.warn(
-                  `[FALLBACK-TRACE] ${data.person_id} WS_RECEIVED blocked fallback `
-                  + `backend=${vlmInsight.backend_used} `
-                  + `desc="${(vlmInsight.description ?? '').slice(0, 60)}"`
-                )
-                break
-              }
               console.log(
                 `[VLM-TRACE] ${data.person_id} WS_RECEIVED (vlm_insight) `
                 + `latency=${vlmInsight.latency_ms}ms `
                 + `backend=${vlmInsight.backend_used} `
+                + `isFallback=${vlmInsight.backend_used === 'fallback'} `
                 + `overlay_summary="${vlmInsight.description.slice(0, 80)}"`
               )
               addVLMInsight(vlmInsight)

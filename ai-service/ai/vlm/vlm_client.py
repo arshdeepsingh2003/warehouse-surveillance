@@ -40,7 +40,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import inspect
 import json
 import logging
 import os
@@ -665,13 +664,8 @@ class VLMClient:
         if cache_key in self._cache:
             cached_at, cached_result = self._cache[cache_key]
             if time.time() - cached_at < settings.VLM_CACHE_TTL_SECONDS:
-                # HARD RULE: never return cached fallback
+                # Don't return cached fallback — allow retry to get a real VLM result
                 if cached_result.backend_used == "fallback":
-                    logger.warning(
-                        f"[FALLBACK-TRACE] person_id={person_id} camera_id={camera_id} "
-                        f"reason=cached_fallback_evicted "
-                        f"cache_key={cache_key}"
-                    )
                     del self._cache[cache_key]
                 else:
                     logger.debug(f"VLM cache hit: {cache_key}")
@@ -680,15 +674,11 @@ class VLMClient:
         # Crop person from frame
         crop = crop_person(frame, bbox, padding=30)
         if crop.shape[0] < 20 or crop.shape[1] < 20:
-            logger.warning(
-                f"[FALLBACK-TRACE] person_id={person_id} camera_id={camera_id} "
-                f"reason=crop_too_small "
-                f"crop_shape={crop.shape}"
-            )
+            logger.debug(f"person_id={person_id} camera={camera_id} crop too small: {crop.shape}")
             return self._fallback_result(person_id, camera_id, zone_id, zone_name)
 
-        # Build context-aware prompt
-        prompt = self._build_prompt(zone_name, is_restricted, extra_context)
+        # Build context-aware prompt with person ID and zone enforcement
+        prompt = self._build_prompt(zone_name, person_id, is_restricted, extra_context)
 
         # Encode image
         image_b64 = encode_frame_b64(crop, quality=settings.VLM_JPEG_QUALITY)
@@ -699,17 +689,11 @@ class VLMClient:
             raw = await self._backend.query(image_b64, prompt)
             latency_ms = int((time.monotonic() - t0) * 1000)
         except Exception as e:
-            logger.error(
-                f"[FALLBACK-TRACE] person_id={person_id} camera_id={camera_id} "
-                f"reason=VLM_query_exception error={e}"
-            )
+            logger.error(f"VLM query failed person_id={person_id} camera_id={camera_id} error={e}")
             return self._fallback_result(person_id, camera_id, zone_id, zone_name)
 
         if not raw:
-            logger.warning(
-                f"[FALLBACK-TRACE] person_id={person_id} camera_id={camera_id} "
-                f"reason=empty_vlm_response"
-            )
+            logger.warning(f"VLM empty response person_id={person_id} camera_id={camera_id}")
             return self._fallback_result(person_id, camera_id, zone_id, zone_name)
 
         # Parse response
@@ -719,17 +703,35 @@ class VLMClient:
             latency_ms=latency_ms,
         )
 
-        # HARD RULE: never cache fallback results
+        # Don't cache fallback results — allow cooldown-expired refresh to retry
         if result.backend_used == "fallback":
-            logger.warning(
-                f"[FALLBACK-TRACE] person_id={person_id} camera_id={camera_id} "
-                f"reason=parse_returned_fallback "
-                f"raw_preview={raw[:100]}"
-            )
             return result
+
+        # ── Build final description: zone is appended by backend, NOT by Groq ──
+        # Groq outputs only the action (e.g. "crouching while handling items").
+        # We add person_id and zone name here to guarantee correctness.
+        raw_desc = result.description.strip()
+        if raw_desc:
+            # Strip any person_id prefix if Groq included one despite instructions
+            for prefix in (f"{person_id} ", f"{person_id} is "):
+                if raw_desc.startswith(prefix):
+                    raw_desc = raw_desc[len(prefix):]
+                    break
+            result.description = f"{person_id} {raw_desc} in {zone_name}"
+        else:
+            result.description = f"{person_id} detected in {zone_name}."
 
         # Cache the result (only non-fallback)
         self._cache[cache_key] = (time.time(), result)
+
+        # ── Zone hallucination audit logging ──────────────────────────────
+        logger.info(
+            f"CAMERA_ID={camera_id} "
+            f"CAMERA_ZONE={zone_name} "
+            f"PERSON_ID={person_id}"
+        )
+        logger.info(f"RAW_VLM_RESPONSE={raw[:500]}")
+        logger.info(f"FINAL_DESCRIPTION={result.description[:300]}")
         logger.info(
             f"[VLM] {person_id} @ {zone_name}: "
             f"{'⚠ ANOMALY' if result.is_anomaly else 'normal'} | "
@@ -746,38 +748,43 @@ class VLMClient:
     def _build_prompt(
         self,
         zone_name:     str,
+        person_id:     str,
         is_restricted: bool,
         extra_context: str,
     ) -> str:
         """
-        Build a context-aware prompt for the VLM.
-
-        Good VLM prompts for surveillance:
-          • State the context (warehouse, zone type)
-          • Ask for specific observable facts (posture, objects, movement)
-          • Ask for safety/anomaly assessment
-          • Request concise, structured output
+        Build a prompt that asks the VLM for a short visual description
+        of what the person is doing — without any location or zone names.
+        The zone name is appended by the backend after receiving the VLM response,
+        guaranteeing it always matches the camera's configured zone.
         """
-        zone_context = (
-            f"This is a RESTRICTED ACCESS area ({zone_name}). "
-            "Any unauthorized person here is a security concern."
-            if is_restricted
-            else f"This is the {zone_name} of an industrial warehouse."
-        )
-
         return (
-            f"You are a warehouse safety monitoring AI.\n"
-            f"Context: {zone_context}\n"
+            f"Describe what the person is doing in this image.\n"
+            f"Person ID: {person_id}\n"
             f"{extra_context}\n\n"
-            f"Analyze this image and respond in this exact format:\n"
+            f"Respond in this exact format:\n"
             f"ACTIVITY: [one of: walking, running, standing, loitering, carrying_object, "
             f"handling_items, falling, crouching, unauthorized_entry, unknown]\n"
             f"ANOMALY: [normal or anomaly]\n"
             f"SEVERITY: [none, low, medium, or high]\n"
-            f"DESCRIPTION: [one clear sentence describing what the person is doing "
-            f"and any safety or security concern, noting any objects being carried]\n\n"
-            f"Be concise and factual. Focus on observable behavior, posture, "
-            f"and any objects being handled or carried."
+            f"DESCRIPTION: <action> <optional visible details>\n\n"
+            f"DESCRIPTION examples:\n"
+            f"- walking carrying a black bag.\n"
+            f"- standing near the rack.\n"
+            f"- crouching while handling items.\n"
+            f"- moving beside pallets.\n\n"
+            f"Rules:\n"
+            f"- Describe only what the person is doing, wearing, or holding.\n"
+            f"- Do NOT mention any location, zone, or area name.\n"
+            f"- Do NOT use words like 'in', 'at', 'near the', 'through the' "
+            f"followed by a location.\n"
+            f"- Describe only what is directly visible in the image.\n"
+            f"- Use plain observational language.\n"
+            f"- Do not speculate about intent, risk, safety, or security.\n"
+            f"- Do not mention the absence of concerns.\n"
+            f"- Do not infer emotions, motives, or future actions.\n"
+            f"- Do not invent durations or timing.\n"
+            f"- Be concise — under 10 words when possible."
         )
 
     def _parse_response(
@@ -924,20 +931,15 @@ class VLMClient:
         self, person_id: str, camera_id: str, zone_id: str, zone_name: str
     ) -> VLMResult:
         """Return a safe default when VLM call fails."""
-        # Build a compact call-stack snippet (last 3 frames after this one)
-        stack = "|".join(
-            f"{f.filename}:{f.lineno}"
-            for f in inspect.stack()[1:4]
-        )
-        logger.warning(
-            f"[FALLBACK-TRACE] person_id={person_id} camera_id={camera_id} "
-            f"reason=VLM_call_failed call_stack=[{stack}]"
+        logger.info(
+            f"VLM returning fallback person_id={person_id} camera_id={camera_id} "
+            f"zone={zone_name}"
         )
         return VLMResult(
             person_id=     person_id,
             camera_id=     camera_id,
             zone_id=       zone_id,
-            description=   f"Person detected in {zone_name}. VLM analysis unavailable.",
+            description=   f"{person_id} detected in {zone_name}. VLM analysis unavailable.",
             activity_type= "unknown",
             anomaly_label= "normal",
             severity=      "none",
@@ -992,13 +994,8 @@ class VLMClient:
         if cache_key in self._cache:
             cached_at, cached_result = self._cache[cache_key]
             if time.time() - cached_at < settings.VLM_CACHE_TTL_SECONDS:
-                # HARD RULE: never return cached fallback
+                # Don't return cached fallback — allow retry to get a real VLM result
                 if cached_result.backend_used == "fallback":
-                    logger.warning(
-                        f"[FALLBACK-TRACE] person_id={person_id} camera_id={camera_id} "
-                        f"reason=cached_fallback_evicted "
-                        f"cache_key={cache_key}"
-                    )
                     del self._cache[cache_key]
                 else:
                     logger.debug(f"VLM cache hit: {cache_key}")
@@ -1009,31 +1006,19 @@ class VLMClient:
             crop = crop_array
         else:
             if not os.path.isfile(crop_path):
-                logger.warning(
-                    f"[FALLBACK-TRACE] person_id={person_id} camera_id={camera_id} "
-                    f"reason=crop_file_not_found path={crop_path}"
-                )
+                logger.debug(f"person_id={person_id} camera={camera_id} crop file not found: {crop_path}")
                 return self._fallback_result(person_id, camera_id, zone_id, zone_name)
             try:
                 crop = cv2.imread(crop_path)
                 if crop is None or crop.size == 0:
-                    logger.warning(
-                        f"[FALLBACK-TRACE] person_id={person_id} camera_id={camera_id} "
-                        f"reason=empty_crop path={crop_path}"
-                    )
+                    logger.debug(f"person_id={person_id} camera={camera_id} empty crop: {crop_path}")
                     return self._fallback_result(person_id, camera_id, zone_id, zone_name)
             except Exception as e:
-                logger.warning(
-                    f"[FALLBACK-TRACE] person_id={person_id} camera_id={camera_id} "
-                    f"reason=crop_read_error path={crop_path} error={e}"
-                )
+                logger.debug(f"person_id={person_id} camera={camera_id} crop read error: {e}")
                 return self._fallback_result(person_id, camera_id, zone_id, zone_name)
 
         if crop.shape[0] < 20 or crop.shape[1] < 20:
-            logger.warning(
-                f"[FALLBACK-TRACE] person_id={person_id} camera_id={camera_id} "
-                f"reason=crop_too_small crop_shape={crop.shape}"
-            )
+            logger.debug(f"person_id={person_id} camera={camera_id} crop too small: {crop.shape}")
             return self._fallback_result(person_id, camera_id, zone_id, zone_name)
 
         # Detect backend type for prompt selection
@@ -1045,7 +1030,7 @@ class VLMClient:
         elif is_moondream:
             prompt = MoondreamVLMBackend.PROMPT
         else:
-            prompt = self._build_prompt(zone_name, is_restricted, extra_context)
+            prompt = self._build_prompt(zone_name, person_id, is_restricted, extra_context)
 
         # Encode
         image_b64 = encode_frame_b64(crop, quality=settings.VLM_JPEG_QUALITY)
@@ -1067,17 +1052,11 @@ class VLMClient:
                     f"raw_response=\"{raw[:300]}\""
                 )
             except Exception as e:
-                logger.error(
-                    f"[FALLBACK-TRACE] person_id={person_id} camera_id={camera_id} "
-                    f"reason=VLM_query_exception error={e}"
-                )
+                logger.error(f"VLM query failed person_id={person_id} camera_id={camera_id} error={type(e).__name__}: {e}")
                 return self._fallback_result(person_id, camera_id, zone_id, zone_name)
 
         if not raw:
-            logger.warning(
-                f"[FALLBACK-TRACE] person_id={person_id} camera_id={camera_id} "
-                f"reason=empty_vlm_response"
-            )
+            logger.warning(f"VLM empty response person_id={person_id} camera_id={camera_id}")
             return self._fallback_result(person_id, camera_id, zone_id, zone_name)
 
         # Parse
@@ -1095,18 +1074,31 @@ class VLMClient:
                 latency_ms=total_latency_ms,
             )
 
-        # HARD RULE: never cache fallback results
+        # Don't cache fallback — cooldown-based retry will attempt a real VLM result later
         if result.backend_used == "fallback":
-            logger.warning(
-                f"[FALLBACK-TRACE] person_id={person_id} camera_id={camera_id} "
-                f"reason=parse_returned_fallback "
-                f"raw_preview={raw[:100]}"
-            )
             return result
+
+        # ── Build final description: zone is appended by backend, NOT by Groq ──
+        raw_desc = result.description.strip()
+        if raw_desc:
+            for prefix in (f"{person_id} ", f"{person_id} is "):
+                if raw_desc.startswith(prefix):
+                    raw_desc = raw_desc[len(prefix):]
+                    break
+            result.description = f"{person_id} {raw_desc} in {zone_name}"
+        else:
+            result.description = f"{person_id} detected in {zone_name}."
 
         self._cache[cache_key] = (time.time(), result)
 
-        # ── Latency metrics + Groq trace logging ───────────────────────────
+        # ── Zone hallucination audit logging ──────────────────────────────
+        logger.info(
+            f"CAMERA_ID={camera_id} "
+            f"CAMERA_ZONE={zone_name} "
+            f"PERSON_ID={person_id}"
+        )
+        logger.info(f"RAW_VLM_RESPONSE={raw[:500]}")
+        logger.info(f"FINAL_DESCRIPTION={result.description[:300]}")
         logger.info(
             f"[VLM] camera={camera_id} person={person_id} "
             f"QUEUE_WAIT={queue_wait_ms}ms "
@@ -1178,6 +1170,7 @@ class GroqVLMBackend(BaseVLMBackend):
                 model=      self._model,
                 max_tokens= 300,
                 temperature=0.2,
+                timeout=    settings.GROQ_REQUEST_TIMEOUT,
                 messages=[{
                     "role": "user",
                     "content": [

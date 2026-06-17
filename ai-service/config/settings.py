@@ -5,7 +5,12 @@ Typed settings for the AI service, loaded from .env.
 """
 
 import os
+from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+# .env lives next to this file's parent directory (ai-service/.env)
+_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 
 
 class Settings(BaseSettings):
@@ -58,7 +63,7 @@ class Settings(BaseSettings):
     USE_EVENT_DRIVEN_VLM: bool = True
     EVENT_VLM_COOLDOWN:      float = 60.0    # seconds between VLM calls per person
     EVENT_VLM_CACHE_TTL:     float = 60.0    # seconds before cache entry expires
-    EVENT_VLM_RATE_LIMIT:    int   = 1       # max VLM requests per second (global)
+    EVENT_VLM_RATE_LIMIT:    float = 0.5     # max VLM requests per second (global, 0.5 = 1 per 2s)
     EVENT_VLM_DEGRADED_BACKOFF: int = 300    # seconds to disable VLM on 429
 
     # ── Activity Recognition ──────────────────────────────────────────────────
@@ -87,6 +92,7 @@ class Settings(BaseSettings):
     SAVE_DEBUG_CROPS:          bool = False
     VLM_CACHE_TTL_SECONDS:     int = 300
     VLM_MOCK_LATENCY_MS:       int = 80
+    GROQ_REQUEST_TIMEOUT:      int = 60     # seconds before Groq request is aborted
 
     # ── Ollama ──────────────────────────────────────────────────────────────────
     OLLAMA_BASE_URL:  str = "http://localhost:11434"
@@ -125,7 +131,7 @@ class Settings(BaseSettings):
     DEBUG_SAVE_DIR:    str    = "./debug_frames"
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(_ENV_PATH),
         env_file_encoding="utf-8",
         extra="ignore",
     )

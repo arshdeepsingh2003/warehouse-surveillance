@@ -3,6 +3,12 @@ import { Camera, Clock, Cpu, Layers, User, X, Sparkles } from 'lucide-react'
 import { useVLMStore } from '../../store/vlmStore'
 import { ConfidenceBar } from '../common/SeverityBadge'
 
+function getBackendSuffix(backend_used?: string): string {
+  if (backend_used === 'groq') return ' - by groq'
+  if (backend_used && backend_used !== 'mock' && backend_used !== 'fallback') return ' - by no groq'
+  return ''
+}
+
 interface Props {
   personId: string
   cameraId: string
@@ -11,13 +17,9 @@ interface Props {
 
 const STREAM_BASE = (import.meta as any).env?.VITE_STREAM_URL ?? 'http://localhost:8002'
 
-const isFallbackDesc = (desc: string) =>
-  desc.includes('VLM analysis unavailable') || desc.includes('Person detected in')
-
 export function PersonDetailPanel({ personId, cameraId, onClose }: Props) {
   const latestByPerson = useVLMStore(s => s.latestByPerson)
-  const rawInsight = latestByPerson[personId]
-  const insight = rawInsight && !isFallbackDesc(rawInsight.description ?? '') ? rawInsight : null
+  const insight = latestByPerson[personId] ?? null
 
   const ts = useMemo(() => {
     if (!insight?.timestamp) return null
@@ -82,7 +84,7 @@ export function PersonDetailPanel({ personId, cameraId, onClose }: Props) {
                   Activity Description
                 </h3>
                 <div className={`detail-desc ${isAnomaly ? 'detail-desc-anomaly' : ''}`}>
-                  {insight.description}
+                  {insight.description}{getBackendSuffix(insight.backend_used)}
                 </div>
               </div>
 
@@ -141,8 +143,8 @@ export function PersonDetailPanel({ personId, cameraId, onClose }: Props) {
             </>
           ) : (
             <div className="detail-empty-state">
-              <span className="detail-empty-text">No VLM insight available yet for this person.</span>
-              <span className="detail-empty-sub">Waiting for AI analysis...</span>
+              <span className="detail-empty-text">No description available for this person.</span>
+              <span className="detail-empty-sub">Waiting for analysis...</span>
             </div>
           )}
         </div>

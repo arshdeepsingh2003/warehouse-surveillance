@@ -37,6 +37,7 @@ Output per track:
 
 from __future__ import annotations
 
+import hashlib
 import time
 import uuid
 import logging
@@ -112,6 +113,7 @@ class _RecentTrack:
     last_center: tuple[float, float]
     deleted_at: float
     last_person_id: str
+    feature_hash: Optional[str] = None  # HSV histogram hash for appearance matching
 
 
 # ── Internal Track ────────────────────────────────────────────────────────────
@@ -263,6 +265,65 @@ def _iou(bbox1: tuple, bbox2: tuple) -> float:
     a2 = (x2b - x1b) * (y2b - y1b)
     union = a1 + a2 - inter
     return inter / union if union > 0 else 0.0
+
+
+def _compute_feature_hash(frame: np.ndarray, bbox: tuple) -> str:
+    """
+    Compute a simple appearance hash from the HSV histogram of the
+    detection region. Used for re-identification when IoU alone
+    would be ambiguous (e.g. people re-entering after occlusion).
+
+    Returns a hex string hash of the quantised 3D HSV histogram.
+    """
+    x1, y1, x2, y2 = bbox
+    x1 = max(0, x1); y1 = max(0, y1)
+    x2 = min(frame.shape[1], x2); y2 = min(frame.shape[0], y2)
+    if x2 <= x1 or y2 <= y1:
+        return "0" * 32
+    crop = frame[y1:y2, x1:x2]
+    if crop.size == 0:
+        return "0" * 32
+    try:
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        # 8×4×4 bins in H,S,V
+        hist = cv2.calcHist([hsv], [0, 1, 2], None, [8, 4, 4],
+                            [0, 180, 0, 256, 0, 256])
+        cv2.normalize(hist, hist, 0, 255, cv2.NORM_MINMAX)
+        hist = hist.astype(np.uint8).flatten()
+        # Hash the flattened histogram
+        return hashlib.md5(hist.tobytes()).hexdigest()
+    except Exception:
+        return "0" * 32
+
+
+def _histogram_similarity(
+    frame: np.ndarray,
+    bbox1: tuple,
+    bbox2: tuple,
+) -> float:
+    """Compare two detection regions by HSV histogram correlation (0–1)."""
+    try:
+        def _hist(b):
+            x1, y1, x2, y2 = b
+            x1 = max(0, x1); y1 = max(0, y1)
+            x2 = min(frame.shape[1], x2); y2 = min(frame.shape[0], y2)
+            if x2 <= x1 or y2 <= y1:
+                return None
+            c = frame[y1:y2, x1:x2]
+            if c.size == 0:
+                return None
+            hsv = cv2.cvtColor(c, cv2.COLOR_BGR2HSV)
+            h = cv2.calcHist([hsv], [0, 1, 2], None, [8, 4, 4],
+                             [0, 180, 0, 256, 0, 256])
+            cv2.normalize(h, h, 0, 1, cv2.NORM_MINMAX)
+            return h
+        h1 = _hist(bbox1)
+        h2 = _hist(bbox2)
+        if h1 is None or h2 is None:
+            return 0.0
+        return float(cv2.compareHist(h1, h2, cv2.HISTCMP_CORREL))
+    except Exception:
+        return 0.0
 
 
 def _hungarian_match(
@@ -468,7 +529,7 @@ class PersonTracker:
             zone = self._get_zone(det)
 
             # Check recently_deleted for re-identification
-            reid_uuid = self._match_recently_deleted(det)
+            reid_uuid = self._match_recently_deleted(det, frame)
             if reid_uuid is not None:
                 n_reidentified += 1
                 self._tracks.append(_Track(det, zone, self._next_id, track_uuid=reid_uuid))
@@ -491,12 +552,14 @@ class PersonTracker:
             bbox = t.bbox
             cx = (bbox[0] + bbox[2]) / 2.0
             cy = (bbox[1] + bbox[3]) / 2.0
+            feat = _compute_feature_hash(frame, bbox)
             self._recently_deleted.append(_RecentTrack(
                 track_uuid=t.track_uuid,
                 last_bbox=bbox,
                 last_center=(cx, cy),
                 deleted_at=now,
                 last_person_id=f"P-{t.track_id + 1000}",
+                feature_hash=feat,
             ))
             # Track lifetime for audit
             if t.hits >= PersonTracker.MIN_HITS:
@@ -548,7 +611,28 @@ class PersonTracker:
                 velocity=     (t.vx, t.vy),
             ))
 
-        # ── Save debug image with tracked persons drawn ─────────────────────────
+        # ── Debug logging per confirmed track ──────────────────────────────
+        for p in result:
+            feat = _compute_feature_hash(frame, p.bbox)
+            logger.info(
+                f"TRACK_ID={p.person_id} "
+                f"DETECTION_BOX={list(p.bbox)} "
+                f"PERSON_FEATURE_HASH={feat[:16]} "
+                f"CAMERA_ID={self.camera_id}"
+            )
+
+        # ── Duplicate ID check ─────────────────────────────────────────────
+        seen_ids: set[str] = set()
+        for p in result:
+            if p.person_id in seen_ids:
+                logger.error(
+                    f"[DUPLICATE-ID] camera={self.camera_id} "
+                    f"DUPLICATE person_id={p.person_id} "
+                    f"bbox={list(p.bbox)} — this should never happen!"
+                )
+            seen_ids.add(p.person_id)
+
+        # ── Save debug image with tracked persons drawn ─────────────────────
         if self._debug_dir:
             import os as _os
             viz = frame.copy()
@@ -598,22 +682,41 @@ class PersonTracker:
         self._next_id = [1]
         logger.info(f"[{self.camera_id}] Tracker reset (ID counter cleared)")
 
-    def _match_recently_deleted(self, detection: Detection) -> Optional[str]:
+    def _match_recently_deleted(
+        self,
+        detection: Detection,
+        frame: np.ndarray,
+    ) -> Optional[str]:
         """
         Check if *detection* matches a recently deleted track.
+        Uses both IoU and appearance similarity for robust re-identification.
         Returns the track_uuid if a match is found, None otherwise.
         """
+        det_feature = _compute_feature_hash(frame, detection.bbox)
         best_uuid: Optional[str] = None
-        best_iou = 0.0
+        best_score = 0.0
         for recent in self._recently_deleted:
             iou = _iou(recent.last_bbox, detection.bbox)
-            if iou > best_iou and iou >= self.REIDENTIFY_IOU_THRESHOLD:
-                best_iou = iou
+            # Appearance similarity: compare current detection's feature hash
+            # with the stored hash of the recently deleted track
+            appearance = 0.0
+            if recent.feature_hash and recent.feature_hash != "0" * 32:
+                if det_feature == recent.feature_hash:
+                    appearance = 1.0
+            # Combined score: weight IoU more for position, appearance as tiebreaker
+            score = iou * 0.7 + appearance * 0.3
+            if score > best_score and iou >= self.REIDENTIFY_IOU_THRESHOLD:
+                best_score = score
                 best_uuid = recent.track_uuid
         if best_uuid:
-            logger.debug(
+            logger.info(
                 f"[{self.camera_id}] Re-identifying det {detection.bbox} "
-                f"→ track_uuid={best_uuid} (iou={best_iou:.3f})"
+                f"→ track_uuid={best_uuid} (score={best_score:.3f})"
+            )
+        else:
+            logger.debug(
+                f"[{self.camera_id}] No re-id match for det {detection.bbox} "
+                f"(feature={det_feature[:12]})"
             )
         return best_uuid
 

@@ -99,6 +99,7 @@ class VLMMetrics:
     queue_depth:       int = 0
     cooldown_skips:    int = 0
     event_triggers:    int = 0
+    first_detection:   int = 0
 
 
 # ── Event Engine ────────────────────────────────────────────────────────────
@@ -219,6 +220,15 @@ class EventEngine:
                 return False, "cache_hit"
 
         self.metrics.cache_misses += 1
+
+        # First detection trigger — every new track gets exactly one immediate VLM analysis
+        if state.last_vlm_time == 0.0:
+            self.metrics.first_detection += 1
+            logger.info(
+                f"[VLM-FIRST-DETECTION] person_id={person.person_id} "
+                f"trigger=first_detection"
+            )
+            return True, "first_detection"
 
         # Event-based trigger
         if event in VLM_TRIGGER_EVENTS:
@@ -350,21 +360,17 @@ class EventEngine:
     async def acquire_throttle(self) -> None:
         """
         Acquire a throttle slot.
-        Waits if the global rate limit (1 req/s) would be exceeded.
+        Waits if the global rate limit would be exceeded.
+        Rate is controlled by EVENT_VLM_RATE_LIMIT (requests per second).
+        Default: 1 req/s → 1.0s interval.
         """
         self.metrics.requests_started += 1
         now = time.time()
-        wait = self._last_request_time + 1.0 - now
+        interval = 1.0 / max(settings.EVENT_VLM_RATE_LIMIT, 0.1)
+        wait = self._last_request_time + interval - now
         if wait > 0:
             await asyncio.sleep(wait)
         self._last_request_time = time.time()
-
-        # Queue management
-        if self._request_queue:
-            queue_event = asyncio.Event()
-            self._request_queue.append(queue_event)
-            self.metrics.queue_depth = len(self._request_queue)
-            await queue_event.wait()
 
     # ── Degraded mode ──────────────────────────────────────────────────────
 
@@ -423,6 +429,7 @@ class EventEngine:
             "queue_depth":        self.metrics.queue_depth,
             "cooldown_skips":     self.metrics.cooldown_skips,
             "event_triggers":     self.metrics.event_triggers,
+            "first_detection":    self.metrics.first_detection,
             "is_degraded":        self.is_degraded(),
             "degraded_until":     self._degraded_until,
             "active_persons":     len(self._persons),
