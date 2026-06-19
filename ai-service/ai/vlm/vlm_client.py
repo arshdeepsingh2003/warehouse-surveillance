@@ -615,7 +615,7 @@ class VLMClient:
         client = VLMClient()
         result = await client.analyze_person(
             frame=frame, bbox=(x1,y1,x2,y2),
-            person_id="P-1025", camera_id="cam-05",
+            person_id="05-P1025", camera_id="cam-05",
             zone_id="restricted_area", zone_name="Restricted Area"
         )
     """
@@ -648,7 +648,7 @@ class VLMClient:
         Args:
             frame:         Full BGR frame from the camera
             bbox:          (x1,y1,x2,y2) person bounding box
-            person_id:     Tracked person ID (e.g. "P-1025")
+            person_id:     Tracked person ID (e.g. "05-P1025")
             camera_id:     Camera ID (e.g. "cam-05")
             zone_id:       Zone identifier
             zone_name:     Human-readable zone name

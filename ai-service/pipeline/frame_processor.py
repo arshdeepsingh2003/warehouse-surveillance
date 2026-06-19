@@ -57,7 +57,7 @@ _NORMAL_ACTIVITIES = [
     ("walking",         "Person moving between aisle sections carrying a scanner."),
 ]
 
-_PERSON_IDS = [f"P-{i}" for i in range(1001, 1060)]
+_PERSON_IDS = [f"01-P{i}" for i in range(1001, 1060)]
 
 _ZONE_MAP = {
     "cam-01": "entry_zone",
@@ -181,6 +181,7 @@ class FrameProcessor:
             # Build a TrackedPerson for the overlay
             mock_person = TrackedPerson(
                 track_id=1,
+                camera_id=cam_id,
                 bbox=(x1, y1, x2, y2),
                 confidence=confidence,
                 zone_id=zone,

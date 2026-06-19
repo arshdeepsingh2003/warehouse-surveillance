@@ -9,12 +9,12 @@ at a higher level:
 
   VLM output (per person)         LLM output (zone / shift level)
   ─────────────────────────────   ────────────────────────────────
-  "P-1025 is walking through      "Storage area has been mostly
-   the storage aisle carrying      normal today with routine pick
-   a large white box."             operations. One loitering event
-                                   detected at 14:23 near the dock
-  "P-1031 has been standing        entrance — recommend follow-up.
-   near the dock entrance for       Overall risk: LOW."
+  "05-P1025 is walking through     "Storage area has been mostly
+   the storage aisle carrying       normal today with routine pick
+   a large white box."              operations. One loitering event
+                                    detected at 14:23 near the dock
+  "05-P1031 has been standing       entrance — recommend follow-up.
+   near the dock entrance for        Overall risk: LOW."
    18 minutes without activity."
 
 LLM tasks:

@@ -25,7 +25,7 @@ track_uuid is carried forward to maintain VLM cache continuity.
 Output per track:
   TrackedPerson = {
     track_uuid: str             stable UUID surviving re-identification
-    track_id:   int             transient counter ID (P-1001, P-1002, ...)
+    track_id:   int             transient counter ID (1001, 1002, ...)
     bbox:       (x1,y1,x2,y2)  current bounding box
     confidence: float
     zone_id:    str             which zone the person is in
@@ -63,6 +63,7 @@ class TrackedPerson:
     """
     track_id:    int
     track_uuid:  str    # stable UUID that survives re-identification
+    camera_id:   str    # camera this person was tracked on
     bbox:        tuple[int, int, int, int]   # x1,y1,x2,y2
     confidence:  float
     zone_id:     str
@@ -75,8 +76,9 @@ class TrackedPerson:
 
     @property
     def person_id(self) -> str:
-        """Dashboard-friendly string ID."""
-        return f"P-{self.track_id + 1000}"
+        """Camera-aware ID — unique across the system (e.g. 01-P1001)."""
+        cam = "".join(c for c in self.camera_id if c.isdigit())
+        return f"{cam}-P{self.track_id + 1000}"
 
     @property
     def center(self) -> tuple[int, int]:
@@ -93,6 +95,7 @@ class TrackedPerson:
         return {
             "track_id":    self.track_id,
             "track_uuid":  self.track_uuid,
+            "camera_id":   self.camera_id,
             "person_id":   self.person_id,
             "bbox":        list(self.bbox),
             "confidence":  round(self.confidence, 3),
@@ -558,7 +561,7 @@ class PersonTracker:
                 last_bbox=bbox,
                 last_center=(cx, cy),
                 deleted_at=now,
-                last_person_id=f"P-{t.track_id + 1000}",
+                last_person_id=f"{''.join(c for c in self.camera_id if c.isdigit())}-P{t.track_id + 1000}",
                 feature_hash=feat,
             ))
             # Track lifetime for audit
@@ -600,6 +603,7 @@ class PersonTracker:
             result.append(TrackedPerson(
                 track_id=     t.track_id,
                 track_uuid=   t.track_uuid,
+                camera_id=    self.camera_id,
                 bbox=         t.bbox,
                 confidence=   t.confidence,
                 zone_id=      zone.zone_id      if zone else "unknown",

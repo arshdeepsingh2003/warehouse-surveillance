@@ -211,7 +211,7 @@ function PipelineFlow() {
   const steps = [
     { icon: '📹', label: 'Camera Frame',   sub: 'RTSP / mp4', color: 'border-accent-cyan/30 bg-cyan-950/20' },
     { icon: '🔍', label: 'YOLO Detect',    sub: 'Person bbox', color: 'border-purple-500/30 bg-purple-950/20' },
-    { icon: '🏷️', label: 'Track + Zone',   sub: 'P-1025, zone', color: 'border-purple-500/30 bg-purple-950/20' },
+    { icon: '🏷️', label: 'Track + Zone',   sub: '01-P1025, zone', color: 'border-purple-500/30 bg-purple-950/20' },
     { icon: '👁️', label: 'VLM Analyze',    sub: 'Groq / GPT-4o', color: 'border-accent-amber/30 bg-amber-950/20' },
     { icon: '📋', label: 'Rules Engine',   sub: 'Anomaly?', color: 'border-red-500/30 bg-red-950/20' },
     { icon: '🧠', label: 'LLM Explain',    sub: 'Groq Llama 3', color: 'border-accent-amber/30 bg-amber-950/20' },
@@ -402,7 +402,7 @@ export function IntelligencePage() {
               title: 'Anomaly Explanation',
               badge: 'LLM text',
               color: 'border-accent-red/30',
-              prompt: `Alert: unauthorized_access\nZone: Restricted Area\nPerson: P-1025, dwell: 45s\n\nExplain: why flagged, what normally happens here, recommended action, false positive probability.`
+               prompt: `Alert: unauthorized_access\nZone: Restricted Area\nPerson: 01-P1025, dwell: 45s\n\nExplain: why flagged, what normally happens here, recommended action, false positive probability.`
             },
           ].map(({ title, badge, color, prompt }) => (
             <div key={title} className={`border rounded-lg p-3 space-y-2 ${color} bg-surface-800`}>

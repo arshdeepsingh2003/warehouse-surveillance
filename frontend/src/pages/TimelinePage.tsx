@@ -10,8 +10,8 @@ import './Timeline.css'
 const ANOMALY_ACTIVITIES = ['unauthorized_entry', 'falling', 'loitering']
 
 export function TimelinePage() {
-  const [personId, setPersonId] = useState('P-1025')
-  const [input,    setInput]    = useState('P-1025')
+  const [personId, setPersonId] = useState('01-P1025')
+  const [input,    setInput]    = useState('01-P1025')
 
   const { data: timeline, isLoading, error } = useQuery({
     queryKey: ['timeline', personId],
@@ -30,7 +30,7 @@ export function TimelinePage() {
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && handleSearch()}
-            placeholder="Enter Person ID (e.g. P-1025)"
+            placeholder="Enter Person ID (e.g. 01-P1025)"
             className="timeline-search-input"
           />
         </div>
@@ -47,7 +47,7 @@ export function TimelinePage() {
           <div className="timeline-person-header">
             <div className="timeline-person-avatar">
               <span className="timeline-person-avatar-text">
-                {timeline.person_id.replace('P-', '')}
+                {timeline.person_id}
               </span>
             </div>
             <div>
