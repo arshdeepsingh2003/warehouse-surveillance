@@ -7,7 +7,6 @@ import { WS_URL } from '../api/client'
 import { useAlertStore } from '../store/alertStore'
 import { useCameraStore } from '../store/cameraStore'
 import { useTrackingStore } from '../store/trackingStore'
-import { useIntelligenceStore } from '../store/intelligenceStore'
 import { useVLMStore } from '../store/vlmStore'
 import type { VLMInsight, WSEvent } from '../types'
 
@@ -17,9 +16,6 @@ export function useWebSocket() {
   const addLiveAlert    = useAlertStore(s => s.addLiveAlert)
   const updateCamStatus = useCameraStore(s => s.updateCameraStatus)
   const updateTracking  = useTrackingStore(s => s.updateTracking)
-  const setZoneSummary  = useIntelligenceStore(s => s.setZoneSummary)
-  const setShiftReport  = useIntelligenceStore(s => s.setShiftReport)
-  const addExplanation  = useIntelligenceStore(s => s.addExplanation)
   const addVLMInsight   = useVLMStore(s => s.addInsight)
 
   const connect = useCallback(() => {
@@ -84,18 +80,6 @@ export function useWebSocket() {
             // keep-alive — no action needed
             break
 
-          case 'zone_summary':
-            if (data.payload) {
-              setZoneSummary(data.payload as any)
-            }
-            break
-
-          case 'shift_report':
-            if (data.payload) {
-              setShiftReport(data.payload as any)
-            }
-            break
-
           case 'activity_update':
             // Activity records are now consumed by the Activity Log page
             // via REST API polling. VLM insights go through 'vlm_insight' events.
@@ -131,15 +115,6 @@ export function useWebSocket() {
             }
             break
 
-          case 'anomaly_explanation':
-          case 'alert_explanation':
-            if (data.payload) {
-              addExplanation(data.payload as any)
-            } else {
-              addExplanation(data as any)
-            }
-            break
-
           default:
             break
         }
@@ -156,7 +131,7 @@ export function useWebSocket() {
     ws.current.onerror = () => {
       ws.current?.close()
     }
-  }, [addLiveAlert, updateCamStatus, updateTracking, setZoneSummary, setShiftReport, addExplanation, addVLMInsight])
+  }, [addLiveAlert, updateCamStatus, updateTracking, addVLMInsight])
 
   useEffect(() => {
     connect()

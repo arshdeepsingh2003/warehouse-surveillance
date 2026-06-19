@@ -9,10 +9,7 @@ import { DashboardPage }  from './pages/DashboardPage'
 import { LiveFeedPage }   from './pages/LiveFeedPage'
 import { AlertsPage }     from './pages/AlertsPage'
 import { ActivitiesPage } from './pages/ActivitiesPage'
-import { AnalyticsPage }  from './pages/AnalyticsPage'
 import { TimelinePage }   from './pages/TimelinePage'
-import { IntelligencePage } from './pages/IntelligencePage'
-import { AIInsightsPage }  from './pages/AIInsightsPage'
 import { useWebSocket }   from './hooks/useWebSocket'
 
 const qc = new QueryClient({
@@ -29,10 +26,7 @@ const PAGE_TITLES: Record<string, string> = {
   livefeed:   'Live Camera Feed',
   alerts:     'Alert Management',
   activities: 'Activity Log',
-  analytics:  'Analytics & Reports',
   timeline:   'Person Timeline',
-  intelligence: 'AI Intelligence Dashboard',
-  'ai-insights': 'AI Insights — VLM Activity Understanding',
 }
 
 function AppInner() {
@@ -62,10 +56,7 @@ function AppInner() {
             {page === 'livefeed'   && <LiveFeedPage  />}
             {page === 'alerts'     && <AlertsPage    />}
             {page === 'activities' && <ActivitiesPage />}
-            {page === 'analytics'  && <AnalyticsPage />}
             {page === 'timeline'   && <TimelinePage  />}
-            {page === 'intelligence' && <IntelligencePage />}
-            {page === 'ai-insights' && <AIInsightsPage />}
           </ErrorBoundary>
         </main>
       </div>

@@ -2,7 +2,7 @@
 import { useState } from 'react'
 import {
   LayoutDashboard, Video, Bell, ClipboardList,
-  BarChart3, User, BrainCircuit, Settings, Shield, ChevronLeft, ChevronRight, Eye
+  User, Shield, ChevronLeft, ChevronRight
 } from 'lucide-react'
 import './Sidebar.css'
 
@@ -13,10 +13,7 @@ const NAV: NavItem[] = [
   { label: 'Live Feed',      icon: <Video           size={16} />, page: 'livefeed'   },
   { label: 'Alerts',         icon: <Bell            size={16} />, page: 'alerts'     },
   { label: 'Activity Log',   icon: <ClipboardList   size={16} />, page: 'activities' },
-  { label: 'Analytics',      icon: <BarChart3       size={16} />, page: 'analytics'  },
   { label: 'Person Timeline',icon: <User            size={16} />, page: 'timeline'   },
-  { label: 'Intelligence',   icon: <BrainCircuit    size={16} />, page: 'intelligence' },
-  { label: 'AI Insights',    icon: <Eye             size={16} />, page: 'ai-insights' },
 ]
 
 interface Props { activePage: string; onNavigate: (page: string) => void }
@@ -56,14 +53,6 @@ export function Sidebar({ activePage, onNavigate }: Props) {
       </nav>
 
       <div className="sidebar-bottom">
-        <button
-          className="sidebar-bottom-btn"
-          title={collapsed ? 'Settings' : undefined}
-        >
-          <Settings size={16} className="flex-shrink-0" />
-          {!collapsed && <span>Settings</span>}
-        </button>
-
         <button
           onClick={() => setCollapsed(!collapsed)}
           className="sidebar-collapse-btn"
