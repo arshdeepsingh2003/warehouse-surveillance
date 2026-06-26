@@ -474,7 +474,7 @@ class PersonTracker:
         self._tracks = [
             t for t in self._tracks
             if t.visible_ratio(frame_w, frame_h) >= self.FRAME_VISIBILITY_THRESHOLD
-            and not (t.misses > 0 and t.touches_edge(frame_w, frame_h, self.EDGE_MARGIN))
+            and not (t.misses >= 3 and t.touches_edge(frame_w, frame_h, self.EDGE_MARGIN))
         ]
         pruned = pre_prune - len(self._tracks)
         if pruned > 0:

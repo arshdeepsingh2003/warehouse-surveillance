@@ -688,6 +688,8 @@ class VLMClient:
         try:
             raw = await self._backend.query(image_b64, prompt)
             latency_ms = int((time.monotonic() - t0) * 1000)
+        except RateLimitError:
+            raise
         except Exception as e:
             logger.error(f"VLM query failed person_id={person_id} camera_id={camera_id} error={e}")
             return self._fallback_result(person_id, camera_id, zone_id, zone_name)
@@ -1051,6 +1053,8 @@ class VLMClient:
                     f"latency_ms={groq_latency_ms} "
                     f"raw_response=\"{raw[:300]}\""
                 )
+            except RateLimitError:
+                raise
             except Exception as e:
                 logger.error(f"VLM query failed person_id={person_id} camera_id={camera_id} error={type(e).__name__}: {e}")
                 return self._fallback_result(person_id, camera_id, zone_id, zone_name)

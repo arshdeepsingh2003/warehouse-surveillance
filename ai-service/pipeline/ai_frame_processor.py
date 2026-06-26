@@ -989,6 +989,12 @@ class VLMAIFrameProcessor(AIFrameProcessor):
                     error=str(result))
                 self._audit["groq_requests_failed"] += 1
                 self._vlm_inflight_persons.discard(person.track_uuid)
+                
+                # Record a fallback result in the event engine so the frontend knows it's unavailable
+                fallback_res = self._vlm._fallback_result(
+                    person.person_id, cam_id, person.zone_id, person.zone_name
+                )
+                self._event_engine.record_vlm_call(person, activity, fallback_res, reason)
                 continue
 
             self._event_engine.handle_success()
