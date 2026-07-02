@@ -183,11 +183,22 @@ class VLMFrameProcessor:
                 if vlm:
                     act.description = vlm.description
                     # VLM overrides anomaly if it detects something the rules missed
-                    if vlm.is_anomaly and act.anomaly_label == "normal":
+                    if (vlm.is_anomaly or vlm.activity_type in ("theft_attempt", "safety_violation")) and act.anomaly_label == "normal":
                         act.anomaly_label = "anomaly"
                         logger.info(
                             f"[{cam_id}] VLM upgraded {act.person_id} to anomaly: {vlm.description[:60]}…"
                         )
+                    
+                    if vlm.activity_type == "theft_attempt":
+                        act.activity_type = "theft_attempt"
+                        act.anomaly_label = "anomaly"
+                        if "theft_detected" not in act.flags:
+                            act.flags.append("theft_detected")
+                    elif vlm.activity_type == "safety_violation":
+                        act.activity_type = "safety_violation"
+                        act.anomaly_label = "anomaly"
+                        if "misconduct_detected" not in act.flags:
+                            act.flags.append("misconduct_detected")
 
             pipe._last_activities = activities
 

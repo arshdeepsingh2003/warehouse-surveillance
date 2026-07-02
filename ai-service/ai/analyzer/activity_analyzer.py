@@ -69,6 +69,8 @@ class AnomalyFlag:
     FAST_MOVEMENT      = "fast_movement"
     LONG_DWELL         = "long_dwell"
     PPE_ZONE_VIOLATION = "ppe_zone_violation"
+    THEFT_DETECTED     = "theft_detected"
+    MISCONDUCT_DETECTED = "misconduct_detected"
 
 
 # ── Result dataclass ──────────────────────────────────────────────────────────

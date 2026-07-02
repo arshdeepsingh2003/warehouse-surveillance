@@ -144,18 +144,34 @@ class HybridBackend(BaseActivityBackend):
         person: TrackedPerson,
     ) -> ActivityResult:
         """Merge VLM result into rule-based result, preferring VLM data."""
+        from ai.analyzer.activity_analyzer import AnomalyFlag
+
+        flags = rule_result.flags.copy()
+        if vlm.activity_type == "theft_attempt":
+            flags.append(AnomalyFlag.THEFT_DETECTED)
+        elif vlm.activity_type == "safety_violation":
+            flags.append(AnomalyFlag.MISCONDUCT_DETECTED)
+        elif vlm.activity_type == ActivityLabel.UNAUTHORIZED_ENTRY:
+            flags.append(AnomalyFlag.RESTRICTED_ZONE)
+        elif vlm.activity_type == ActivityLabel.FALLING:
+            flags.append(AnomalyFlag.POSSIBLE_FALL)
+        elif vlm.activity_type == ActivityLabel.LOITERING:
+            flags.append(AnomalyFlag.LOITERING)
+        elif vlm.activity_type == ActivityLabel.RUNNING:
+            flags.append(AnomalyFlag.FAST_MOVEMENT)
+
         return ActivityResult(
             person_id=person.person_id,
             track_id=person.track_id,
             activity_type=vlm.activity_type,
             anomaly_label=(
                 "anomaly"
-                if vlm.is_anomaly or rule_result.is_anomaly
+                if vlm.is_anomaly or rule_result.is_anomaly or vlm.activity_type in ("theft_attempt", "safety_violation")
                 else "normal"
             ),
             description=vlm.description or rule_result.description,
             confidence=max(vlm.confidence, rule_result.confidence),
-            flags=rule_result.flags,
+            flags=list(set(flags)),
             zone_id=person.zone_id,
             zone_name=person.zone_name,
             dwell_time=person.dwell_time,

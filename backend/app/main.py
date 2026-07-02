@@ -95,6 +95,19 @@ app.add_middleware(
 )
 
 
+# ── Static Files ──────────────────────────────────────────────────────────────
+from fastapi.staticfiles import StaticFiles
+import os
+
+# Create uploads directory at backend root if it does not exist
+backend_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+uploads_dir = os.path.join(backend_root, "uploads")
+alerts_dir = os.path.join(uploads_dir, "alerts")
+os.makedirs(alerts_dir, exist_ok=True)
+
+app.mount("/static", StaticFiles(directory=uploads_dir), name="static")
+
+
 # ── Routers ───────────────────────────────────────────────────────────────────
 # Each router handles one resource group. The prefix is defined in the router.
 

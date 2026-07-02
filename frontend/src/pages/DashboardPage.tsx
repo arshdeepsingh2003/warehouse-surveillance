@@ -116,16 +116,16 @@ export function DashboardPage() {
             recentVLM.map((insight) => (
               <div
                 key={insight.id}
-                className={`vlm-stream-item ${insight.label === 'anomaly' ? 'vlm-stream-item-anomaly' : ''}`}
+                className={`vlm-stream-item ${insight.anomaly_label === 'anomaly' ? 'vlm-stream-item-anomaly' : ''}`}
               >
                 <div className="vlm-stream-item-left">
-                  <span className={`vlm-stream-dot ${insight.label === 'anomaly' ? 'vlm-stream-dot-anomaly' : 'vlm-stream-dot-normal'}`} />
+                  <span className={`vlm-stream-dot ${insight.anomaly_label === 'anomaly' ? 'vlm-stream-dot-anomaly' : 'vlm-stream-dot-normal'}`} />
                   <span className="vlm-stream-person">{insight.person_id}</span>
                   <span className="vlm-stream-camera">{insight.camera_id}</span>
                 </div>
                 <span className="vlm-stream-desc">{insight.description.slice(0, 60)}</span>
                 <div className="vlm-stream-item-right">
-                  <span className="vlm-stream-activity">{insight.activity}</span>
+                  <span className="vlm-stream-activity">{insight.activity_type}</span>
                   <span className="vlm-stream-confidence">{Math.round(insight.confidence * 100)}%</span>
                   <span className="vlm-stream-time">{new Date(insight.timestamp).toLocaleTimeString()}</span>
                 </div>
@@ -151,7 +151,7 @@ export function DashboardPage() {
             { label: 'Person Tracker',  ok: true  },
             { label: 'Alert Engine',    ok: true  },
             { label: 'WebSocket Hub',   ok: true  },
-            { label: 'Notification Svc',ok: false },
+            { label: 'Notification Svc',ok: true  },
           ].map(({ label, ok }) => (
             <div key={label} className="system-status-item">
               <span className="system-status-label">{label}</span>

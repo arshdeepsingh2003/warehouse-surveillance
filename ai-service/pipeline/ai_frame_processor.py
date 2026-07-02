@@ -43,7 +43,7 @@ import numpy as np
 from ai.crop.crop_manager import CropManager
 from ai.detector.person_detector import PersonDetector
 from ai.tracker.person_tracker import PersonTracker, TrackedPerson
-from ai.analyzer.activity_analyzer import ActivityResult
+from ai.analyzer.activity_analyzer import ActivityResult, ActivityLabel, AnomalyFlag
 from ai.analyzer.recognizer import ActivityRecognizer
 from ai.rules.rules_engine import RulesEngine, AlertEvent
 from ai.overlay.frame_overlay import FrameOverlay
@@ -690,6 +690,41 @@ class VLMAIFrameProcessor(AIFrameProcessor):
                 carryable = self._detector.detect_carryable_objects(frame, cam_id)
 
                 activities = await pipe.recognizer.analyze(frame, persons, cam_id, carryable)
+
+                # Merge VLM results from EventEngine before evaluating rules/overlay
+                for act in activities:
+                    vlm_data = self._event_engine.get_vlm_data(act.person_id, track_uuid=act.track_uuid)
+                    if vlm_data:
+                        act.description = vlm_data.get("description", act.description)
+                        vlm_anomaly = vlm_data.get("anomaly_label", "normal")
+                        vlm_activity = vlm_data.get("activity_type", "unknown")
+                        if vlm_anomaly == "anomaly" or vlm_activity in ("theft_attempt", "safety_violation"):
+                            act.anomaly_label = "anomaly"
+                            if vlm_activity == "theft_attempt":
+                                act.activity_type = "theft_attempt"
+                                if AnomalyFlag.THEFT_DETECTED not in act.flags:
+                                    act.flags.append(AnomalyFlag.THEFT_DETECTED)
+                            elif vlm_activity == "safety_violation":
+                                act.activity_type = "safety_violation"
+                                if AnomalyFlag.MISCONDUCT_DETECTED not in act.flags:
+                                    act.flags.append(AnomalyFlag.MISCONDUCT_DETECTED)
+                            elif vlm_activity == "unauthorized_entry":
+                                act.activity_type = "unauthorized_entry"
+                                if AnomalyFlag.RESTRICTED_ZONE not in act.flags:
+                                    act.flags.append(AnomalyFlag.RESTRICTED_ZONE)
+                            elif vlm_activity == "falling":
+                                act.activity_type = "falling"
+                                if AnomalyFlag.POSSIBLE_FALL not in act.flags:
+                                    act.flags.append(AnomalyFlag.POSSIBLE_FALL)
+                            elif vlm_activity == "loitering":
+                                act.activity_type = "loitering"
+                                if AnomalyFlag.LOITERING not in act.flags:
+                                    act.flags.append(AnomalyFlag.LOITERING)
+                            elif vlm_activity == "running":
+                                act.activity_type = "running"
+                                if AnomalyFlag.FAST_MOVEMENT not in act.flags:
+                                    act.flags.append(AnomalyFlag.FAST_MOVEMENT)
+
                 alerts     = pipe.rules.evaluate(activities)
                 pipe._last_persons    = persons
                 pipe._last_activities = activities
@@ -908,7 +943,7 @@ class VLMAIFrameProcessor(AIFrameProcessor):
 
         batch = candidates[:settings.VLM_MAX_PERSONS_PER_FRAME]
         enqueue_ts = time.monotonic()
-        tasks_info: list[tuple[TrackedPerson, Optional[ActivityResult], str, object]] = []
+        tasks_info: list[tuple[TrackedPerson, Optional[ActivityResult], str, int, str, object]] = []
 
         for person, activity, reason in batch:
             crop_array = pipe.crop_mgr.get_crop_array(person.person_id, track_uuid=person.track_uuid)
@@ -918,6 +953,10 @@ class VLMAIFrameProcessor(AIFrameProcessor):
                 )
                 self._vlm_inflight_persons.discard(person.track_uuid)
                 continue
+
+            crop_record = pipe.crop_mgr.get_record(person.person_id, track_uuid=person.track_uuid)
+            frame_n = crop_record.frame_number if crop_record else 0
+            crop_ts = crop_record.timestamp if crop_record else ""
 
             # Crop hash dedup: skip if virtually identical to last analyzed crop
             if person.track_uuid in self._vlm_last_crop_hash:
@@ -940,13 +979,15 @@ class VLMAIFrameProcessor(AIFrameProcessor):
                 "zone_id":       person.zone_id,
                 "zone_name":     person.zone_name,
                 "is_restricted": person.is_restricted,
+                "frame_number":  frame_n,
+                "crop_timestamp": crop_ts,
                 "extra_context": (
                     f"Event trigger: {reason}. "
                     f"Rule-based activity: {act_type}."
                 ),
             }
             tasks_info.append((
-                person, activity, reason,
+                person, activity, reason, frame_n, crop_ts,
                 self._vlm.analyze_crop(
                     crop_path="", metadata=metadata,
                     crop_array=crop_array, enqueue_ts=enqueue_ts,
@@ -957,7 +998,7 @@ class VLMAIFrameProcessor(AIFrameProcessor):
             return
 
         self._audit["groq_requests_started"] += len(tasks_info)
-        for p, _, _, _ in tasks_info:
+        for p, _, _, _, _, _ in tasks_info:
             logger.info(
                 f"[GROQ_REQUEST] person_id={p.person_id} camera={cam_id} uuid={p.track_uuid}"
             )
@@ -965,7 +1006,7 @@ class VLMAIFrameProcessor(AIFrameProcessor):
 
         # Process requests sequentially with per-request throttle
         # (avoids bursting multiple Groq requests simultaneously and hitting rate limits)
-        for person, activity, reason, coro in tasks_info:
+        for person, activity, reason, frame_n, crop_ts, coro in tasks_info:
             await self._event_engine.acquire_throttle()
             try:
                 result = await coro
@@ -992,7 +1033,8 @@ class VLMAIFrameProcessor(AIFrameProcessor):
                 
                 # Record a fallback result in the event engine so the frontend knows it's unavailable
                 fallback_res = self._vlm._fallback_result(
-                    person.person_id, cam_id, person.zone_id, person.zone_name
+                    person.person_id, cam_id, person.zone_id, person.zone_name,
+                    frame_number=frame_n, crop_timestamp=crop_ts
                 )
                 self._event_engine.record_vlm_call(person, activity, fallback_res, reason)
                 continue
@@ -1007,6 +1049,89 @@ class VLMAIFrameProcessor(AIFrameProcessor):
             _write_trace("GROQ_RESPONSE",
                 person_id=person.person_id, camera_id=cam_id, uuid=person.track_uuid,
                 description=result.description[:120] if result.description else "")
+
+            # ── VLM PIPELINE AUDIT LOGGING ────────────────────────────────────
+            crop_record = pipe.crop_mgr.get_record(person.person_id, track_uuid=person.track_uuid)
+            curr_crop_path = crop_record.crop_path if crop_record else "None"
+            curr_crop_ts = crop_record.timestamp if crop_record else "Unknown"
+
+            logger.info(
+                f"[VLM-PIPELINE-AUDIT] "
+                f"Person ID: {person.person_id} | "
+                f"Crop Path: {curr_crop_path} | "
+                f"Zone: {person.zone_name} (ID: {person.zone_id}) | "
+                f"Timestamp: {curr_crop_ts} | "
+                f"VLM Response: {result.description if result else 'None'} | "
+                f"Attached to: {person.person_id} (UUID: {person.track_uuid})"
+            )
+
+            # If the VLM detected an anomaly (or theft_attempt / safety_violation), validate it via rules engine
+            if result.anomaly_label == "anomaly" or result.activity_type in ("theft_attempt", "safety_violation"):
+                flags = []
+                # Check for theft keywords in anomalous VLM descriptions
+                is_theft_desc = (
+                    result.anomaly_label == "anomaly" and 
+                    any(k in result.description.lower() for k in ["theft", "steal", "pocketing", "conceal", "vest"])
+                )
+                if result.activity_type == "theft_attempt" or is_theft_desc:
+                    flags.append(AnomalyFlag.THEFT_DETECTED)
+                    result.activity_type = "theft_attempt"
+                elif result.activity_type == "safety_violation":
+                    flags.append(AnomalyFlag.MISCONDUCT_DETECTED)
+                elif result.activity_type == ActivityLabel.UNAUTHORIZED_ENTRY:
+                    flags.append(AnomalyFlag.RESTRICTED_ZONE)
+                elif result.activity_type == ActivityLabel.FALLING:
+                    flags.append(AnomalyFlag.POSSIBLE_FALL)
+                elif result.activity_type == ActivityLabel.LOITERING:
+                    flags.append(AnomalyFlag.LOITERING)
+                elif result.activity_type == ActivityLabel.RUNNING:
+                    flags.append(AnomalyFlag.FAST_MOVEMENT)
+
+                act_res = ActivityResult(
+                    person_id=    person.person_id,
+                    track_id=     person.track_id,
+                    track_uuid=   person.track_uuid,
+                    activity_type=result.activity_type,
+                    anomaly_label=result.anomaly_label,
+                    description=  result.description,
+                    confidence=   result.confidence,
+                    flags=        flags,
+                    zone_id=      person.zone_id,
+                    zone_name=    person.zone_name,
+                    dwell_time=   person.dwell_time,
+                    backend_used= result.backend_used,
+                )
+
+                vlm_alerts = pipe.rules.evaluate([act_res])
+                for v_alert in vlm_alerts:
+                    self._alert_counts[cam_id] += 1
+                    snapshot = self._frame_to_b64(frame)
+                    await self._api.post_alert(
+                        camera_id=   cam_id,
+                        zone=        v_alert.zone_id,
+                        alert_type=  v_alert.alert_type,
+                        severity=    v_alert.severity,
+                        description= v_alert.description,
+                        person_id=   v_alert.person_id,
+                        confidence=  v_alert.confidence,
+                        snapshot_b64=snapshot,
+                        source=      "rules_engine",
+                    )
+
+                    # Feed ZoneSummarizer alert buffer
+                    self._summarizer.log_alert({
+                        "person_id":  v_alert.person_id,
+                        "zone":       v_alert.zone_id,
+                        "alert_type": v_alert.alert_type,
+                        "severity":   v_alert.severity,
+                        "description": v_alert.description,
+                    })
+
+                    # LLM explanation for high-severity alerts (async, non-blocking)
+                    if v_alert.severity == "high" and settings.USE_LLM:
+                        asyncio.create_task(
+                            self._post_alert_explanation(v_alert, v_alert.description)
+                        )
 
             self._audit["groq_requests_completed"] += 1
             self._audit["vlm_results_parsed"] += 1
@@ -1233,12 +1358,12 @@ class VLMAIFrameProcessor(AIFrameProcessor):
         while True:
             await asyncio.sleep(30)
             try:
-                # Collect active person IDs from all pipelines
-                active_ids: set[str] = set()
+                # Collect active person track UUIDs from all pipelines
+                active_uuids: set[str] = set()
                 for pipe in self._pipelines.values():
                     for p in (pipe._last_persons or []):
-                        active_ids.add(p.person_id)
-                self._event_engine.evict_stale_persons(active_ids)
+                        active_uuids.add(p.track_uuid)
+                self._event_engine.evict_stale_persons(active_uuids)
                 self._event_engine.evict_stale_cache()
             except Exception:
                 logger.debug("EventEngine cleanup error", exc_info=True)

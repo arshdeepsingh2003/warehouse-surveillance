@@ -75,6 +75,8 @@ class PersonState:
     last_vlm_description: str        = ""
     last_vlm_event:   str            = ""
     track_uuid:       str            = ""
+    last_vlm_frame_number: int       = 0
+    last_vlm_activity_type: str      = "unknown"
 
 
 # ── VLM Cache Entry ─────────────────────────────────────────────────────────
@@ -90,6 +92,7 @@ class _CacheEntry:
 
 @dataclass
 class VLMMetrics:
+    gather_started:    int = 0
     requests_started:  int = 0
     requests_completed: int = 0
     requests_failed:   int = 0
@@ -122,11 +125,11 @@ class EventEngine:
     def __init__(self, vlm_client: VLMClient) -> None:
         self._vlm = vlm_client
 
-        # Person state memory: person_id → PersonState
+        # Person state memory: track_uuid → PersonState
         self._persons: dict[str, PersonState] = {}
 
-        # VLM cache: (camera_id, person_id, zone, activity) → _CacheEntry
-        self._cache: dict[tuple[str, str, str, str], _CacheEntry] = {}
+        # VLM cache: (track_uuid, zone, activity) → _CacheEntry
+        self._cache: dict[tuple[str, str, str], _CacheEntry] = {}
 
         # Request throttle: global rate limiter
         self._last_request_time: float = 0.0
@@ -146,14 +149,15 @@ class EventEngine:
     # ── Person state management ─────────────────────────────────────────────
 
     def get_or_create_state(self, person: TrackedPerson) -> PersonState:
-        pid = person.person_id
-        if pid not in self._persons:
-            self._persons[pid] = PersonState(
-                person_id=    pid,
-                camera_id=    person.zone_id or "",
+        uid = person.track_uuid
+        if uid not in self._persons:
+            self._persons[uid] = PersonState(
+                person_id=    person.person_id,
+                camera_id=    person.camera_id or "",
                 current_zone= person.zone_id or "",
+                track_uuid=   uid,
             )
-        return self._persons[pid]
+        return self._persons[uid]
 
     def evaluate(
         self,
@@ -177,7 +181,6 @@ class EventEngine:
         state.current_zone     = activity.zone_id or person.zone_id or ""
         state.current_activity = activity.activity_type
         state.anomaly_label    = activity.anomaly_label
-        state.track_uuid       = person.track_uuid
 
         # ── Detect events ────────────────────────────────────────────────
 
@@ -309,9 +312,20 @@ class EventEngine:
         reason:   str,
     ) -> None:
         """Record a completed VLM call into person state and cache."""
-        pid = person.person_id
-        state = self._persons.get(pid)
+        uid = person.track_uuid
+        state = self._persons.get(uid)
         if state is None:
+            # fallback
+            state = self._persons.get(person.person_id)
+        if state is None:
+            return
+
+        # Check for stale result to prevent race conditions
+        if result is not None and result.frame_number < state.last_vlm_frame_number:
+            logger.warning(
+                f"[VLM-STALE-DISCARD] Discarding stale VLM response for {person.person_id} "
+                f"(result frame {result.frame_number} < latest frame {state.last_vlm_frame_number})"
+            )
             return
 
         now = time.time()
@@ -320,6 +334,10 @@ class EventEngine:
 
         if result is not None:
             state.last_vlm_description = result.description
+            state.last_vlm_activity_type = result.activity_type
+            state.last_vlm_frame_number = result.frame_number
+            state.anomaly_label = result.anomaly_label
+            state.current_activity = result.activity_type
             # Cache the result
             cache_key = self._cache_key(person, activity, state)
             self._cache[cache_key] = _CacheEntry(
@@ -334,12 +352,12 @@ class EventEngine:
         activity: Optional[ActivityResult] = None,
         state:    Optional[PersonState] = None,
     ) -> tuple:
-        """Build a cache key: (camera_id, person_id, zone, activity)."""
+        """Build a cache key: (track_uuid, zone, activity)."""
         if state is None:
-            state = self._persons.get(person.person_id)
+            state = self._persons.get(person.track_uuid) or self._persons.get(person.person_id)
         zone = state.current_zone if state else (activity.zone_id if activity else person.zone_id)
         act = activity.activity_type if activity else (state.current_activity if state else "unknown")
-        return (person.person_id, zone, act)
+        return (person.track_uuid, zone, act)
 
     # ── Throttling ─────────────────────────────────────────────────────────
 
@@ -399,11 +417,11 @@ class EventEngine:
 
     # ── Cleanup ────────────────────────────────────────────────────────────
 
-    def evict_stale_persons(self, active_person_ids: set[str]) -> None:
+    def evict_stale_persons(self, active_track_uuids: set[str]) -> None:
         """Remove state for persons no longer being tracked."""
-        stale = set(self._persons.keys()) - active_person_ids
-        for pid in stale:
-            del self._persons[pid]
+        stale = set(self._persons.keys()) - active_track_uuids
+        for uid in stale:
+            del self._persons[uid]
 
     def evict_stale_cache(self) -> None:
         """Remove expired cache entries."""
@@ -445,20 +463,37 @@ class EventEngine:
 
     # ── VLM data lookup (for downstream enrichment) ─────────────────────────
 
-    def get_vlm_description(self, person_id: str) -> str:
+    def get_vlm_description(self, person_id: str, track_uuid: Optional[str] = None) -> str:
         """Return the last VLM description for a person, or empty string."""
-        state = self._persons.get(person_id)
+        key = track_uuid
+        if not key:
+            for u, s in self._persons.items():
+                if s.person_id == person_id:
+                    key = u
+                    break
+        if not key:
+            key = person_id
+        state = self._persons.get(key)
         if state is None:
             return ""
         return state.last_vlm_description
 
-    def get_vlm_data(self, person_id: str) -> dict:
+    def get_vlm_data(self, person_id: str, track_uuid: Optional[str] = None) -> dict:
         """Return VLM data dict for a person (for frame update payloads)."""
-        state = self._persons.get(person_id)
+        key = track_uuid
+        if not key:
+            for u, s in self._persons.items():
+                if s.person_id == person_id:
+                    key = u
+                    break
+        if not key:
+            key = person_id
+        state = self._persons.get(key)
         if state is None or not state.last_vlm_description:
             return {}
         return {
             "description":   state.last_vlm_description,
+            "activity_type": getattr(state, "last_vlm_activity_type", "unknown"),
             "anomaly_label": state.anomaly_label,
             "event":         state.last_vlm_event,
         }

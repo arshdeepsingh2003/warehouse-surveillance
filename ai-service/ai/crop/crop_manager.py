@@ -172,7 +172,10 @@ class CropManager:
         key = track_uuid or self._person_to_uuid.get(person_id)
         if key is None:
             return None
-        return self._crop_arrays.get(key)
+        crop = self._crop_arrays.get(key)
+        if crop is None or crop.size == 0:
+            return None
+        return crop
 
     def get_record(self, person_id: str, track_uuid: Optional[str] = None) -> Optional[CropRecord]:
         """Return the most recent CropRecord."""
@@ -202,7 +205,7 @@ class CropManager:
         """
         Extract a padded person crop from the frame.
 
-        Returns the crop region or the full frame if the crop is empty.
+        Returns the crop region or an empty array if the crop fails.
         """
         h, w = frame.shape[:2]
         x1, y1, x2, y2 = bbox
@@ -210,13 +213,17 @@ class CropManager:
         y1 = max(0, y1 - self._padding)
         x2 = min(w, x2 + self._padding)
         y2 = min(h, y2 + self._padding)
+        if x2 <= x1 or y2 <= y1:
+            logger.warning(
+                f"[{self._camera_id}] Invalid bbox coordinates for bbox={bbox}, returning empty array"
+            )
+            return np.empty((0, 0, 3), dtype=np.uint8)
         crop = frame[y1:y2, x1:x2]
         if crop.size == 0:
             logger.warning(
-                f"[{self._camera_id}] Empty crop for bbox={bbox}, "
-                f"returning full frame"
+                f"[{self._camera_id}] Empty crop for bbox={bbox}, returning empty array"
             )
-            return frame
+            return np.empty((0, 0, 3), dtype=np.uint8)
         return crop
 
     # ── Retention ──────────────────────────────────────────────────────────────

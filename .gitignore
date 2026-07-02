@@ -56,3 +56,6 @@ ai-service/debug_frame_*.jpg
 ai-service/*.jpg
 ai-service/debug_frames/
 ai-service/crops/
+
+# Backend uploads
+backend/uploads/

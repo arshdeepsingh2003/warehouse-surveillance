@@ -105,6 +105,22 @@ class GroqBackend(BaseActivityBackend):
         self, vlm: VLMResult, person: TrackedPerson
     ) -> ActivityResult:
         """Convert a VLMResult into an ActivityResult for the pipeline."""
+        from ai.analyzer.activity_analyzer import AnomalyFlag
+
+        flags = []
+        if vlm.activity_type == "theft_attempt":
+            flags.append(AnomalyFlag.THEFT_DETECTED)
+        elif vlm.activity_type == "safety_violation":
+            flags.append(AnomalyFlag.MISCONDUCT_DETECTED)
+        elif vlm.activity_type == "unauthorized_entry":
+            flags.append(AnomalyFlag.RESTRICTED_ZONE)
+        elif vlm.activity_type == "falling":
+            flags.append(AnomalyFlag.POSSIBLE_FALL)
+        elif vlm.activity_type == "loitering":
+            flags.append(AnomalyFlag.LOITERING)
+        elif vlm.activity_type == "running":
+            flags.append(AnomalyFlag.FAST_MOVEMENT)
+
         return ActivityResult(
             person_id=person.person_id,
             track_id=person.track_id,
@@ -112,7 +128,7 @@ class GroqBackend(BaseActivityBackend):
             anomaly_label=vlm.anomaly_label,
             description=vlm.description,
             confidence=vlm.confidence,
-            flags=[],
+            flags=flags,
             zone_id=person.zone_id,
             zone_name=person.zone_name,
             dwell_time=person.dwell_time,

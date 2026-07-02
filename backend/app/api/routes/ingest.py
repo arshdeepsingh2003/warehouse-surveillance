@@ -122,6 +122,44 @@ async def ingest_alert(data: AlertIngest):
     Receive an anomaly alert from the AI service.
     Appends to in-memory alerts and broadcasts to dashboard.
     """
+    import base64
+    import os
+    import uuid
+
+    snapshot_url = data.snapshot_url
+
+    if data.snapshot_b64 and data.alert_type == "theft_attempt":
+        try:
+            # Resolve directory paths relative to the project root
+            backend_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+            alerts_dir = os.path.join(backend_root, "uploads", "alerts")
+            
+            # Create the directory automatically if it does not exist
+            os.makedirs(alerts_dir, exist_ok=True)
+
+            # Generate unique filename using UUID to prevent collisions
+            filename = f"alert_{data.id}_{uuid.uuid4().hex[:8]}.jpg"
+            filepath = os.path.join(alerts_dir, filename)
+
+            # Handle base64 header if present (e.g. data:image/jpeg;base64,)
+            b64_str = data.snapshot_b64
+            if "," in b64_str:
+                b64_str = b64_str.split(",", 1)[1]
+
+            # Decode and write to disk
+            # Add dynamic padding to handle unpadded base64 strings gracefully
+            b64_str_padded = b64_str + '=' * (-len(b64_str) % 4)
+            img_bytes = base64.b64decode(b64_str_padded)
+            with open(filepath, "wb") as f:
+                f.write(img_bytes)
+
+            # Use relative URL as required: /static/alerts/<filename>.jpg
+            snapshot_url = f"/static/alerts/{filename}"
+            logger.info(f"Successfully saved alert snapshot to {filepath} | relative URL: {snapshot_url}")
+        except Exception as e:
+            # Log failures without preventing the alert from being created
+            logger.exception(f"Failed to decode or save alert snapshot for alert {data.id}: {e}")
+
     # Build the record (strip raw base64 — too large for the list)
     record = {
         "id":           data.id,
@@ -131,7 +169,7 @@ async def ingest_alert(data: AlertIngest):
         "severity":     data.severity,
         "description":  data.description,
         "person_id":    data.person_id,
-        "snapshot_url": data.snapshot_url,  # None for now; wire S3 later
+        "snapshot_url": snapshot_url,
         "status":       "active",
         "confidence":   data.confidence,
         "triggered_at": data.triggered_at,
@@ -143,7 +181,7 @@ async def ingest_alert(data: AlertIngest):
     logger.info(
         f"🚨 ALERT INGESTED | id={data.id} type={data.alert_type} "
         f"severity={data.severity} camera={data.camera_id} zone={data.zone} "
-        f"source={data.source} confidence={data.confidence}"
+        f"source={data.source} confidence={data.confidence} snapshot_url={snapshot_url}"
     )
 
     MOCK_ALERTS.insert(0, record)
@@ -161,7 +199,7 @@ async def ingest_alert(data: AlertIngest):
         "description": data.description,
         "person_id":   data.person_id,
         "confidence":  data.confidence,
-        "snapshot_url": data.snapshot_url,
+        "snapshot_url": snapshot_url,
         "timestamp":   data.triggered_at,
         "source":      data.source,
     })

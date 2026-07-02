@@ -8,6 +8,7 @@ import { useAlertStore } from '../store/alertStore'
 import { useCameraStore } from '../store/cameraStore'
 import { useTrackingStore } from '../store/trackingStore'
 import { useVLMStore } from '../store/vlmStore'
+import { useNotificationStore } from '../store/notificationStore'
 import type { VLMInsight, WSEvent } from '../types'
 
 export function useWebSocket() {
@@ -17,6 +18,7 @@ export function useWebSocket() {
   const updateCamStatus = useCameraStore(s => s.updateCameraStatus)
   const updateTracking  = useTrackingStore(s => s.updateTracking)
   const addVLMInsight   = useVLMStore(s => s.addInsight)
+  const addToast        = useNotificationStore(s => s.addToast)
 
   const connect = useCallback(() => {
     if (ws.current?.readyState === WebSocket.OPEN) return
@@ -52,7 +54,7 @@ export function useWebSocket() {
           case 'alert_triggered':
             // Push alert into the live alert store so Alert Panel updates instantly
             if (data.alert_id) {
-              addLiveAlert({
+              const newAlert = {
                 id:           data.alert_id,
                 camera_id:    data.camera_id ?? '',
                 zone:         data.zone ?? '',
@@ -61,12 +63,18 @@ export function useWebSocket() {
                 description:  data.description ?? '',
                 person_id:    data.person_id ?? null,
                 snapshot_url: data.snapshot_url ?? null,
-                status:       'active',
+                status:       'active' as const,
                 confidence:   data.confidence ?? 0,
                 triggered_at: data.timestamp,
                 resolved_at:  null,
                 resolved_by:  null,
-              })
+              }
+              
+              // Trigger toast & browser notifications
+              addToast(newAlert)
+
+              // Add to alerts panel store
+              addLiveAlert(newAlert)
             }
             break
 
@@ -131,7 +139,7 @@ export function useWebSocket() {
     ws.current.onerror = () => {
       ws.current?.close()
     }
-  }, [addLiveAlert, updateCamStatus, updateTracking, addVLMInsight])
+  }, [addLiveAlert, updateCamStatus, updateTracking, addVLMInsight, addToast])
 
   useEffect(() => {
     connect()

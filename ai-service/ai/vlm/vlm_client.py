@@ -98,6 +98,8 @@ class VLMResult:
     latency_ms:        int = 0         # inference time
     backend_used:      str = ""        # which model was actually used
     objects_detected:  list = field(default_factory=list)  # objects identified by VLM
+    frame_number:      int = 0         # frame number of the crop analyzed
+    crop_timestamp:    str = ""        # timestamp of the crop analyzed
 
     @property
     def is_anomaly(self) -> bool:
@@ -122,7 +124,7 @@ def crop_person(frame: np.ndarray, bbox: tuple, padding: int = 20) -> np.ndarray
         padding: Pixels of context to include around the box
 
     Returns:
-        Cropped BGR frame. Returns full frame if crop fails.
+        Cropped BGR frame. Returns empty array if crop fails.
     """
     h, w = frame.shape[:2]
     x1, y1, x2, y2 = bbox
@@ -130,8 +132,10 @@ def crop_person(frame: np.ndarray, bbox: tuple, padding: int = 20) -> np.ndarray
     y1 = max(0, y1 - padding)
     x2 = min(w, x2 + padding)
     y2 = min(h, y2 + padding)
+    if x2 <= x1 or y2 <= y1:
+        return np.empty((0, 0, 3), dtype=np.uint8)
     crop = frame[y1:y2, x1:x2]
-    return crop if crop.size > 0 else frame
+    return crop if crop.size > 0 else np.empty((0, 0, 3), dtype=np.uint8)
 
 
 # ── Base backend ──────────────────────────────────────────────────────────────
@@ -164,6 +168,8 @@ _MOCK_DESCRIPTIONS = [
     ("running",           "anomaly", "medium", "Person is running in the warehouse floor area. Running is prohibited in this zone due to safety regulations."),
     ("handling_items",    "normal",  "none",   "Worker is scanning barcodes on packages at the dispatch station. Normal end-of-shift processing activity."),
     ("crouching",         "normal",  "none",   "Employee crouched to retrieve an item from the bottom shelf. Posture appears correct and safe."),
+    ("theft_attempt",     "anomaly", "high",   "Worker is pocketing a small warehouse item from shelf level 2, concealing it in their pocket. Theft attempt detected."),
+    ("safety_violation",  "anomaly", "high",   "Employee is climbing the storage rack directly without using a ladder or safety harness. Dangerous activity detected."),
 ]
 
 class MockVLMBackend(BaseVLMBackend):
@@ -364,8 +370,6 @@ class GeminiVLMBackend(BaseVLMBackend):
         return response.text.strip()
 
 
-# ── Backend 6: Qwen2.5-VL via Ollama (dedicated warehouse surveillance) ─────
-
 _WAREHOUSE_PROMPT = """\
 You are a warehouse surveillance analysis AI. Analyze the worker in this image \
 and return ONLY valid JSON (no markdown, no extra text):
@@ -381,9 +385,12 @@ loading, unloading, operating_equipment, crouching, climbing, inspecting, unknow
 }
 
 Rules:
+- Describe only what is clearly visible. Do not assume actions, intent, objects, or locations. If an action is uncertain, return activity_category: unknown.
+- If the visible evidence is insufficient, return unknown instead of generating theft, running, climbing, or safety violations.
+- Do NOT guess, assume, or infer any location, camera, or zone names in the description. Simply describe the physical actions of the person.
 - If no person is clearly visible, set activity_category to "unknown" and confidence to 0.0
 - Note if activity appears normal or unusual for warehouse operations
-- Flag safety concerns (missing PPE, running, unsafe ladder use, fall risk) in the description
+- Flag safety concerns (missing PPE, running, unsafe ladder use, fall risk) only if clearly visible
 - Be concise, factual, and specific"""
 
 
@@ -407,11 +414,7 @@ class QwenVLMBackend(BaseVLMBackend):
 
     PROMPT = _WAREHOUSE_PROMPT
 
-    def __init__(
-        self,
-        model:    str = "qwen2.5-vl",
-        base_url: str = "http://localhost:11434",
-    ) -> None:
+    def __init__(self, model: str = "qwen2.5-vl", base_url: str = "http://localhost:11434") -> None:
         import aiohttp
         self._model    = model
         self._base_url = base_url
@@ -462,8 +465,11 @@ class QwenVLMBackend(BaseVLMBackend):
 
 _MOONDREAM_VLM_PROMPT = (
     "Describe what the person is doing in this warehouse image in one short sentence. "
-    "Mention their activity, posture, and any objects visible. "
-    "Is their behavior normal or anomalous?"
+    "Describe only what is clearly visible. Do not assume actions, intent, objects, or locations. "
+    "If an action is uncertain, return activity_category: unknown. "
+    "Do NOT guess, assume, or infer any location, camera, or zone names in the description. Simply describe the physical actions of the person. "
+    "If the visible evidence is insufficient, return unknown instead of generating theft, running, climbing, or safety violations. "
+    "Mention their activity, posture, and any objects visible."
 )
 
 
@@ -641,6 +647,8 @@ class VLMClient:
         is_restricted: bool = False,
         extra_context: str = "",
         track_uuid:  Optional[str] = None,
+        frame_number: int = 0,
+        crop_timestamp: str = "",
     ) -> VLMResult:
         """
         Analyze one tracked person's behavior using the VLM.
@@ -655,13 +663,16 @@ class VLMClient:
             is_restricted: Whether the zone is a restricted area
             extra_context: Any additional context to include in the prompt
             track_uuid:    Stable UUID for cache key continuity (preferred over person_id)
+            frame_number:  Sequence frame number
+            crop_timestamp: Timestamp of the crop
 
         Returns:
             VLMResult with description, activity type, anomaly label
         """
         # Check cache (avoid querying VLM if person/zone unchanged recently)
+        # EventEngine has its own cache check, so we bypass this cache check in event-driven mode
         cache_key = f"{track_uuid or person_id}:{zone_id}"
-        if cache_key in self._cache:
+        if not settings.USE_EVENT_DRIVEN_VLM and cache_key in self._cache:
             cached_at, cached_result = self._cache[cache_key]
             if time.time() - cached_at < settings.VLM_CACHE_TTL_SECONDS:
                 # Don't return cached fallback — allow retry to get a real VLM result
@@ -673,9 +684,9 @@ class VLMClient:
 
         # Crop person from frame
         crop = crop_person(frame, bbox, padding=30)
-        if crop.shape[0] < 20 or crop.shape[1] < 20:
-            logger.debug(f"person_id={person_id} camera={camera_id} crop too small: {crop.shape}")
-            return self._fallback_result(person_id, camera_id, zone_id, zone_name)
+        if crop is None or crop.size == 0 or crop.shape[0] < 20 or crop.shape[1] < 20:
+            logger.debug(f"person_id={person_id} camera={camera_id} crop too small or invalid: {crop.shape if crop is not None else 'None'}")
+            return self._fallback_result(person_id, camera_id, zone_id, zone_name, frame_number, crop_timestamp)
 
         # Build context-aware prompt with person ID and zone enforcement
         prompt = self._build_prompt(zone_name, person_id, is_restricted, extra_context)
@@ -692,17 +703,19 @@ class VLMClient:
             raise
         except Exception as e:
             logger.error(f"VLM query failed person_id={person_id} camera_id={camera_id} error={e}")
-            return self._fallback_result(person_id, camera_id, zone_id, zone_name)
+            return self._fallback_result(person_id, camera_id, zone_id, zone_name, frame_number, crop_timestamp)
 
         if not raw:
             logger.warning(f"VLM empty response person_id={person_id} camera_id={camera_id}")
-            return self._fallback_result(person_id, camera_id, zone_id, zone_name)
+            return self._fallback_result(person_id, camera_id, zone_id, zone_name, frame_number, crop_timestamp)
 
         # Parse response
         result = self._parse_response(
             raw=raw, person_id=person_id, camera_id=camera_id,
             zone_id=zone_id, zone_name=zone_name,
             latency_ms=latency_ms,
+            frame_number=frame_number,
+            crop_timestamp=crop_timestamp,
         )
 
         # Don't cache fallback results — allow cooldown-expired refresh to retry
@@ -754,39 +767,23 @@ class VLMClient:
         is_restricted: bool,
         extra_context: str,
     ) -> str:
-        """
-        Build a prompt that asks the VLM for a short visual description
-        of what the person is doing — without any location or zone names.
-        The zone name is appended by the backend after receiving the VLM response,
-        guaranteeing it always matches the camera's configured zone.
-        """
         return (
-            f"Describe what the person is doing in this image.\n"
+            f"You are a warehouse surveillance analysis AI. Analyze the worker in this image.\n"
             f"Person ID: {person_id}\n"
-            f"{extra_context}\n\n"
-            f"Respond in this exact format:\n"
-            f"ACTIVITY: [one of: walking, running, standing, loitering, carrying_object, "
-            f"handling_items, falling, crouching, unauthorized_entry, unknown]\n"
-            f"ANOMALY: [normal or anomaly]\n"
-            f"SEVERITY: [none, low, medium, or high]\n"
-            f"DESCRIPTION: <action> <optional visible details>\n\n"
-            f"DESCRIPTION examples:\n"
-            f"- walking carrying a black bag.\n"
-            f"- standing near the rack.\n"
-            f"- crouching while handling items.\n"
-            f"- moving beside pallets.\n\n"
+            f"Context: {extra_context}\n\n"
+            f"Return ONLY a valid JSON object (no markdown formatting, no conversational text, no other text outside the JSON) with the following structure:\n"
+            f"{{\n"
+            f"  \"activity_category\": \"one of: walking, running, standing, loitering, carrying_object, handling_items, falling, crouching, theft_attempt, safety_violation, unauthorized_entry, unknown\",\n"
+            f"  \"anomaly_label\": \"anomaly\" or \"normal\",\n"
+            f"  \"severity\": \"none\", \"low\", \"medium\", or \"high\",\n"
+            f"  \"confidence\": 0.0-1.0,\n"
+            f"  \"description\": \"Describe what the person is doing, including what objects they are handling, pocketing, or concealing. Be concise (under 15 words).\"\n"
+            f"}}\n\n"
             f"Rules:\n"
-            f"- Describe only what the person is doing, wearing, or holding.\n"
-            f"- Do NOT mention any location, zone, or area name.\n"
-            f"- Do NOT use words like 'in', 'at', 'near the', 'through the' "
-            f"followed by a location.\n"
-            f"- Describe only what is directly visible in the image.\n"
-            f"- Use plain observational language.\n"
-            f"- Do not speculate about intent, risk, safety, or security.\n"
-            f"- Do not mention the absence of concerns.\n"
-            f"- Do not infer emotions, motives, or future actions.\n"
-            f"- Do not invent durations or timing.\n"
-            f"- Be concise — under 10 words when possible."
+            f"- Look closely at the hands and clothing: identify if the person is pocketing, concealing, or placing warehouse items (like boxes or packages) inside their clothing (e.g. safety vest, jacket), pockets, or bags. If so, classify as 'theft_attempt' and describe the action and object clearly.\n"
+            f"- Describe what is clearly visible. Do not assume location, camera, or zone names. Simply describe the physical actions of the person and the objects they interact with.\n"
+            f"- Identify 'safety_violation' if the person is clearly running, horseplaying, climbing shelves/racks unsafely, or showing other dangerous behaviors.\n"
+            f"- Do NOT include zone names or camera/location details in the description."
         )
 
     def _parse_response(
@@ -797,56 +794,96 @@ class VLMClient:
         zone_id:    str,
         zone_name:  str,
         latency_ms: int,
+        frame_number: int = 0,
+        crop_timestamp: str = "",
     ) -> VLMResult:
         """
         Parse the VLM's structured text response into a VLMResult.
 
-        Handles both well-formed and messy outputs gracefully.
+        Handles JSON, well-formed colon outputs, and messy text gracefully.
         """
-        lines = {
-            line.split(":")[0].strip().upper(): ":".join(line.split(":")[1:]).strip()
-            for line in raw.splitlines()
-            if ":" in line
-        }
+        activity = "unknown"
+        anomaly = "normal"
+        severity = "none"
+        description = raw[:500]
+        confidence = None
 
-        activity    = lines.get("ACTIVITY", "unknown").lower().replace(" ", "_")
-        anomaly     = lines.get("ANOMALY",  "normal").lower()
-        severity    = lines.get("SEVERITY", "none").lower()
-        description = lines.get("DESCRIPTION", raw[:500])
+        try:
+            cleaned = raw.strip()
+            # Remove markdown JSON wrapping if present
+            if cleaned.startswith("```"):
+                cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+                cleaned = re.sub(r"\s*```$", "", cleaned)
+            
+            # Robust extract of JSON if there is surrounding text
+            if not (cleaned.startswith("{") and cleaned.endswith("}")):
+                match = re.search(r"(\{.*\})", cleaned, re.DOTALL)
+                if match:
+                    cleaned = match.group(1)
 
-        # If no structured fields were found, try keyword classification
-        # from free-form text (needed for Moondream which can't do colon format)
-        if not lines and raw:
-            text_lower = raw.lower()
-            activity_keywords = {
-                "walking":    ("walk", "walking", "walked"),
-                "standing":   ("stand", "standing", "stationary"),
-                "carrying":   ("carry", "carrying", "hold", "holding", "transport"),
-                "handling_items": ("pick", "handling", "scan", "sort", "pack", "unpack",
-                                   "picking", "placing", "arranging", "stacking"),
-                "loitering":  ("loiter", "idle", "waiting", "unoccupied"),
-                "crouching":  ("crouch", "bend", "bending", "kneel", "squat"),
-                "running":    ("run", "running", "jog", "jogging"),
-                "falling":    ("fall", "falling", "fallen", "collapse"),
-            }
-            for act, keywords in activity_keywords.items():
-                if any(kw in text_lower for kw in keywords):
-                    activity = act
-                    break
-            if any(w in text_lower for w in ("suspicious", "unauthorized", "danger", "fall", "anomal", "concern")):
-                anomaly = "anomaly"
+            data = json.loads(cleaned)
+            activity = data.get("activity_category", data.get("activity", "unknown")).lower().replace(" ", "_")
+            anomaly = data.get("anomaly_label", data.get("anomaly", "normal")).lower()
+            severity = data.get("severity", "none").lower()
+            description = data.get("description", raw[:500])
+            confidence_val = data.get("confidence")
+            if confidence_val is not None:
+                confidence = float(confidence_val)
+        except Exception:
+            # Fall back to standard line-by-line colon parsing
+            lines = {}
+            for line in raw.splitlines():
+                if ":" in line:
+                    parts = line.split(":", 1)
+                    lines[parts[0].strip().upper()] = parts[1].strip()
+
+            activity    = lines.get("ACTIVITY", "unknown").lower().replace(" ", "_")
+            anomaly     = lines.get("ANOMALY",  "normal").lower()
+            severity    = lines.get("SEVERITY", "none").lower()
+            description = lines.get("DESCRIPTION", raw[:500])
+
+            # If no structured fields were found, try keyword classification
+            # from free-form text
+            if not lines and raw:
+                text_lower = raw.lower()
+                activity_keywords = {
+                    "walking":    ("walk", "walking", "walked"),
+                    "standing":   ("stand", "standing", "stationary"),
+                    "carrying":   ("carry", "carrying", "hold", "holding", "transport"),
+                    "handling_items": ("pick", "handling", "scan", "sort", "pack", "unpack",
+                                       "picking", "placing", "arranging", "stacking"),
+                    "loitering":  ("loiter", "idle", "waiting", "unoccupied"),
+                    "crouching":  ("crouch", "bend", "bending", "kneel", "squat"),
+                    "running":    ("run", "running", "jog", "jogging"),
+                    "falling":    ("fall", "falling", "fallen", "collapse"),
+                    "theft_attempt": ("theft", "steal", "stealing", "pocketing", "concealing"),
+                    "safety_violation": ("horseplay", "fight", "fighting", "unsafe", "violation"),
+                }
+                for act, keywords in activity_keywords.items():
+                    if any(kw in text_lower for kw in keywords):
+                        activity = act
+                        break
+                if any(w in text_lower for w in ("suspicious", "unauthorized", "danger", "fall", "anomal", "concern", "theft", "steal", "violation")):
+                    anomaly = "anomaly"
 
         # Normalise anomaly label
         if anomaly not in ("normal", "anomaly"):
             anomaly = "anomaly" if any(
                 w in raw.lower()
-                for w in ("suspicious", "unauthorized", "danger", "fall", "anomal", "concern")
+                for w in ("suspicious", "unauthorized", "danger", "fall", "anomal", "concern", "theft", "steal", "violation")
             ) else "normal"
 
-        # Confidence: based on severity + whether structured output was parsed
-        confidence = {
-            "high": 0.92, "medium": 0.80, "low": 0.70, "none": 0.85,
-        }.get(severity, 0.75)
+        # If the activity is theft_attempt or safety_violation, force anomaly label and high severity
+        if activity in ("theft_attempt", "safety_violation"):
+            anomaly = "anomaly"
+            if severity == "none" or severity == "low" or severity == "medium":
+                severity = "high"
+
+        # Confidence: based on severity if not parsed
+        if confidence is None or not isinstance(confidence, (int, float)):
+            confidence = {
+                "high": 0.92, "medium": 0.80, "low": 0.70, "none": 0.85,
+            }.get(severity, 0.75)
 
         return VLMResult(
             person_id=     person_id,
@@ -860,6 +897,8 @@ class VLMClient:
             raw_response=  raw,
             latency_ms=    latency_ms,
             backend_used=  _short_backend_name(self._backend),
+            frame_number=  frame_number,
+            crop_timestamp=crop_timestamp,
         )
 
     def _parse_qwen_response(
@@ -870,6 +909,8 @@ class VLMClient:
         zone_id:    str,
         zone_name:  str,
         latency_ms: int,
+        frame_number: int = 0,
+        crop_timestamp: str = "",
     ) -> VLMResult:
         """
         Parse Qwen2.5-VL JSON structured response into VLMResult.
@@ -887,6 +928,13 @@ class VLMClient:
             if cleaned.startswith("```"):
                 cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
                 cleaned = re.sub(r"\s*```$", "", cleaned)
+            
+            # Robust extract of JSON if there is surrounding text
+            if not (cleaned.startswith("{") and cleaned.endswith("}")):
+                match = re.search(r"(\{.*\})", cleaned, re.DOTALL)
+                if match:
+                    cleaned = match.group(1)
+
             data = json.loads(cleaned)
             description = data.get("activity_description", raw[:200])
             objects     = data.get("objects_detected", [])
@@ -927,10 +975,13 @@ class VLMClient:
             latency_ms=       latency_ms,
             backend_used=     _short_backend_name(self._backend),
             objects_detected= objects,
+            frame_number=     frame_number,
+            crop_timestamp=   crop_timestamp,
         )
 
     def _fallback_result(
-        self, person_id: str, camera_id: str, zone_id: str, zone_name: str
+        self, person_id: str, camera_id: str, zone_id: str, zone_name: str,
+        frame_number: int = 0, crop_timestamp: str = "",
     ) -> VLMResult:
         """Return a safe default when VLM call fails."""
         logger.info(
@@ -941,12 +992,14 @@ class VLMClient:
             person_id=     person_id,
             camera_id=     camera_id,
             zone_id=       zone_id,
-            description=   f"{person_id} detected in {zone_name}. VLM analysis unavailable.",
+            description=   f"{person_id} detected in {zone_name}...",
             activity_type= "unknown",
             anomaly_label= "normal",
             severity=      "none",
             confidence=    0.5,
             backend_used=  "fallback",
+            frame_number=  frame_number,
+            crop_timestamp=crop_timestamp,
         )
 
     async def analyze_crop(
@@ -969,6 +1022,8 @@ class VLMClient:
                             zone_name     – str
                             is_restricted – bool
                             extra_context – str (optional rule context)
+                            frame_number  – int
+                            crop_timestamp – str
             crop_array:  In-memory BGR numpy array of the crop (fast path,
                          avoids disk read). Takes precedence over crop_path.
             enqueue_ts:  time.monotonic() timestamp when the VLM task was first
@@ -978,13 +1033,15 @@ class VLMClient:
             VLMResult  (same schema as analyze_person)
         """
         total_t0 = time.monotonic()
-        person_id     = metadata.get("person_id",     "unknown")
-        track_uuid    = metadata.get("track_uuid",    person_id)  # prefer stable UUID
-        camera_id     = metadata.get("camera_id",     "unknown")
-        zone_id       = metadata.get("zone_id",       "unknown")
-        zone_name     = metadata.get("zone_name",     "Unknown")
-        is_restricted = metadata.get("is_restricted", False)
-        extra_context = metadata.get("extra_context", "")
+        person_id      = metadata.get("person_id",     "unknown")
+        track_uuid     = metadata.get("track_uuid",    person_id)  # prefer stable UUID
+        camera_id      = metadata.get("camera_id",     "unknown")
+        zone_id        = metadata.get("zone_id",       "unknown")
+        zone_name      = metadata.get("zone_name",     "Unknown")
+        is_restricted  = metadata.get("is_restricted", False)
+        extra_context  = metadata.get("extra_context", "")
+        frame_number   = metadata.get("frame_number", 0)
+        crop_timestamp = metadata.get("crop_timestamp", "")
 
         # Compute queue wait (time spent in asyncio queue before semaphore acquire)
         queue_wait_ms = 0
@@ -992,8 +1049,9 @@ class VLMClient:
             queue_wait_ms = int((total_t0 - enqueue_ts) * 1000)
 
         # Check cache (keyed by track_uuid for stable lookup across ID regeneration)
+        # EventEngine has its own cache check, so we bypass this cache check in event-driven mode
         cache_key = f"{track_uuid}:{zone_id}"
-        if cache_key in self._cache:
+        if not settings.USE_EVENT_DRIVEN_VLM and cache_key in self._cache:
             cached_at, cached_result = self._cache[cache_key]
             if time.time() - cached_at < settings.VLM_CACHE_TTL_SECONDS:
                 # Don't return cached fallback — allow retry to get a real VLM result
@@ -1009,19 +1067,29 @@ class VLMClient:
         else:
             if not os.path.isfile(crop_path):
                 logger.debug(f"person_id={person_id} camera={camera_id} crop file not found: {crop_path}")
-                return self._fallback_result(person_id, camera_id, zone_id, zone_name)
+                return self._fallback_result(person_id, camera_id, zone_id, zone_name, frame_number, crop_timestamp)
             try:
                 crop = cv2.imread(crop_path)
                 if crop is None or crop.size == 0:
                     logger.debug(f"person_id={person_id} camera={camera_id} empty crop: {crop_path}")
-                    return self._fallback_result(person_id, camera_id, zone_id, zone_name)
+                    return self._fallback_result(person_id, camera_id, zone_id, zone_name, frame_number, crop_timestamp)
             except Exception as e:
                 logger.debug(f"person_id={person_id} camera={camera_id} crop read error: {e}")
-                return self._fallback_result(person_id, camera_id, zone_id, zone_name)
+                return self._fallback_result(person_id, camera_id, zone_id, zone_name, frame_number, crop_timestamp)
 
-        if crop.shape[0] < 20 or crop.shape[1] < 20:
-            logger.debug(f"person_id={person_id} camera={camera_id} crop too small: {crop.shape}")
-            return self._fallback_result(person_id, camera_id, zone_id, zone_name)
+        if crop is None or crop.size == 0 or crop.shape[0] < 20 or crop.shape[1] < 20:
+            logger.debug(f"person_id={person_id} camera={camera_id} crop too small or invalid: {crop.shape if crop is not None else 'None'}")
+            return self._fallback_result(person_id, camera_id, zone_id, zone_name, frame_number, crop_timestamp)
+
+        # Upscale small crops to improve VLM recognition quality (minimum 256px on shorter side)
+        min_dim = 256
+        h, w = crop.shape[:2]
+        if h < min_dim or w < min_dim:
+            scale = min_dim / min(h, w)
+            new_w = int(w * scale)
+            new_h = int(h * scale)
+            crop = cv2.resize(crop, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+            logger.debug(f"Upscaled tiny crop from {w}x{h} to {new_w}x{new_h} for VLM analysis")
 
         # Detect backend type for prompt selection
         is_qwen      = isinstance(self._backend, QwenVLMBackend)
@@ -1057,11 +1125,11 @@ class VLMClient:
                 raise
             except Exception as e:
                 logger.error(f"VLM query failed person_id={person_id} camera_id={camera_id} error={type(e).__name__}: {e}")
-                return self._fallback_result(person_id, camera_id, zone_id, zone_name)
+                return self._fallback_result(person_id, camera_id, zone_id, zone_name, frame_number, crop_timestamp)
 
         if not raw:
             logger.warning(f"VLM empty response person_id={person_id} camera_id={camera_id}")
-            return self._fallback_result(person_id, camera_id, zone_id, zone_name)
+            return self._fallback_result(person_id, camera_id, zone_id, zone_name, frame_number, crop_timestamp)
 
         # Parse
         total_latency_ms = int((time.monotonic() - total_t0) * 1000)
@@ -1070,12 +1138,16 @@ class VLMClient:
                 raw=raw, person_id=person_id, camera_id=camera_id,
                 zone_id=zone_id, zone_name=zone_name,
                 latency_ms=total_latency_ms,
+                frame_number=frame_number,
+                crop_timestamp=crop_timestamp,
             )
         else:
             result = self._parse_response(
                 raw=raw, person_id=person_id, camera_id=camera_id,
                 zone_id=zone_id, zone_name=zone_name,
                 latency_ms=total_latency_ms,
+                frame_number=frame_number,
+                crop_timestamp=crop_timestamp,
             )
 
         # Don't cache fallback — cooldown-based retry will attempt a real VLM result later

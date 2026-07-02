@@ -1,0 +1,240 @@
+/* components/notifications/NotificationToast.css */
+
+.toast-container {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 420px;
+  width: calc(100vw - 48px);
+  pointer-events: none; /* Let clicks pass through empty container space */
+}
+
+.toast-card {
+  pointer-events: auto; /* Re-enable pointer events for the card itself */
+  position: relative;
+  background: rgba(15, 21, 36, 0.85); /* var(--surface-800) transparent */
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--surface-600);
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  transform: translateX(120%);
+  animation: slideIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  transition: all 0.25s ease;
+  overflow: hidden;
+}
+
+@keyframes slideIn {
+  to {
+    transform: translateX(0);
+  }
+}
+
+.toast-card:hover {
+  background: rgba(21, 29, 48, 0.9); /* var(--surface-700) transparent */
+  transform: translateY(-2px);
+  box-shadow: 0 12px 35px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  cursor: pointer;
+}
+
+/* ── Severity Styles ─────────────────────────────────── */
+
+.toast-low {
+  border-left: 4px solid var(--accent-cyan);
+  box-shadow: 0 8px 24px rgba(0, 229, 255, 0.05);
+}
+
+.toast-medium {
+  border-left: 4px solid var(--accent-amber);
+  box-shadow: 0 8px 24px rgba(255, 171, 0, 0.05);
+}
+
+.toast-high {
+  border-left: 4px solid var(--accent-red);
+  box-shadow: 0 8px 24px rgba(255, 23, 68, 0.05);
+}
+
+/* ── Theft / Critical Styles & Keyframes ───────────────── */
+
+.toast-theft-critical {
+  border: 1px solid rgba(255, 23, 68, 0.8);
+  background: rgba(26, 10, 18, 0.9); /* Reddish dark background */
+  box-shadow: 0 0 30px rgba(255, 23, 68, 0.2), inset 0 0 15px rgba(255, 23, 68, 0.1);
+  animation: slideIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards, alarmPulse 2s infinite ease-in-out;
+}
+
+@keyframes alarmPulse {
+  0%, 100% {
+    border-color: rgba(255, 23, 68, 0.8);
+    box-shadow: 0 0 30px rgba(255, 23, 68, 0.2), inset 0 0 15px rgba(255, 23, 68, 0.1);
+  }
+  50% {
+    border-color: rgba(255, 23, 68, 0.3);
+    box-shadow: 0 0 15px rgba(255, 23, 68, 0.08), inset 0 0 5px rgba(255, 23, 68, 0.02);
+  }
+}
+
+.toast-theft-critical .toast-alert-title {
+  color: var(--accent-red);
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-shadow: 0 0 10px rgba(255, 23, 68, 0.5);
+}
+
+/* ── Toast Elements ──────────────────────────────────── */
+
+.toast-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.toast-title-area {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.toast-icon-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+}
+
+.toast-alert-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  text-transform: uppercase;
+}
+
+.toast-close-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.toast-close-btn:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-primary);
+}
+
+.toast-body {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.toast-content-wrapper {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.toast-desc {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+  margin: 0;
+}
+
+.toast-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.toast-meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+/* ── Snapshot Thumbnail ────────────────────────────── */
+
+.toast-snapshot-wrapper {
+  width: 72px;
+  height: 72px;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--surface-600);
+  background: var(--surface-900);
+  flex-shrink: 0;
+}
+
+.toast-snapshot {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 0.3s ease;
+}
+
+.toast-card:hover .toast-snapshot {
+  transform: scale(1.1);
+}
+
+/* ── Actions Row ────────────────────────────────────── */
+
+.toast-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.03);
+  padding-top: 10px;
+}
+
+.toast-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: 1px solid transparent;
+}
+
+.toast-btn-primary {
+  background: rgba(0, 229, 255, 0.08);
+  color: var(--accent-cyan);
+  border-color: rgba(0, 229, 255, 0.2);
+}
+
+.toast-btn-primary:hover {
+  background: rgba(0, 229, 255, 0.16);
+  border-color: rgba(0, 229, 255, 0.4);
+}
+
+.toast-btn-success {
+  background: rgba(0, 230, 118, 0.08);
+  color: var(--accent-green);
+  border-color: rgba(0, 230, 118, 0.2);
+}
+
+.toast-btn-success:hover {
+  background: rgba(0, 230, 118, 0.16);
+  border-color: rgba(0, 230, 118, 0.4);
+}

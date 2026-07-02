@@ -1,5 +1,4 @@
 // App.tsx
-import { useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Sidebar } from './components/layout/Sidebar'
 import { Header }  from './components/layout/Header'
@@ -11,6 +10,8 @@ import { AlertsPage }     from './pages/AlertsPage'
 import { ActivitiesPage } from './pages/ActivitiesPage'
 import { TimelinePage }   from './pages/TimelinePage'
 import { useWebSocket }   from './hooks/useWebSocket'
+import { useNavigationStore } from './store/navigationStore'
+import { NotificationToastContainer } from './components/notifications/NotificationToast'
 
 const qc = new QueryClient({
   defaultOptions: {
@@ -30,7 +31,8 @@ const PAGE_TITLES: Record<string, string> = {
 }
 
 function AppInner() {
-  const [page, setPage] = useState('dashboard')
+  const page = useNavigationStore(s => s.page)
+  const setPage = useNavigationStore(s => s.setPage)
   const { connected }   = useWebSocket()
 
   return (
@@ -60,6 +62,8 @@ function AppInner() {
           </ErrorBoundary>
         </main>
       </div>
+
+      <NotificationToastContainer />
     </div>
   )
 }

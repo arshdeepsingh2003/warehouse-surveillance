@@ -1,9 +1,3 @@
-// components/cameras/CameraGrid.tsx
-// Live MJPEG camera grid with real-time person tracking overlays.
-// The <img> tag streams MJPEG from the AI service (already contains
-// YOLO boxes drawn by Python). The SVG overlay layer adds interactive
-// React elements (person badges, zone info, alert indicators).
-
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Maximize2, WifiOff, Wifi, AlertTriangle, X } from 'lucide-react'
@@ -11,6 +5,7 @@ import { api } from '../../api/client'
 import { useCameraStore } from '../../store/cameraStore'
 import { useAlertStore } from '../../store/alertStore'
 import { useTrackingStore } from '../../store/trackingStore'
+import { useNavigationStore } from '../../store/navigationStore'
 import { BoundingBoxOverlay } from './BoundingBoxOverlay'
 import { PersonDetailPanel } from './PersonDetailPanel'
 import { ErrorBoundary } from '../common/ErrorBoundary'
@@ -192,9 +187,32 @@ export function CameraGrid() {
   const [selectedPerson, setSelectedPerson] = useState<SelectedPerson | null>(null)
   const { cameras: stored, setCameras } = useCameraStore()
 
+  const selectedCameraId = useNavigationStore(s => s.selectedCameraId)
+  const clearSelectedCamera = useNavigationStore(s => s.clearSelectedCamera)
+
+  useEffect(() => {
+    if (selectedCameraId) {
+      setExpandedId(selectedCameraId)
+    }
+  }, [selectedCameraId])
+
   const handlePersonClick = useCallback((cameraId: string, personId: string) => {
     setSelectedPerson({ cameraId, personId })
   }, [])
+
+  const handleToggleExpand = (id: string) => {
+    if (expandedId === id) {
+      setExpandedId(null)
+      clearSelectedCamera()
+    } else {
+      setExpandedId(id)
+    }
+  }
+
+  const handleExitFullscreen = () => {
+    setExpandedId(null)
+    clearSelectedCamera()
+  }
 
   const { data: cameras, isLoading } = useQuery({
     queryKey: ['cameras'],
@@ -214,7 +232,7 @@ export function CameraGrid() {
   if (isLoading) return (
     <div className="gap-3 animate-pulse" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)' }}>
       {Array.from({ length: 6 }).map((_, i) => (
-        <div key={i} className="rounded-xl bg-surface-800" style={{ aspectRatio: '16/9' }} />
+          <div key={i} className="rounded-xl bg-surface-800" style={{ aspectRatio: '16/9' }} />
       ))}
     </div>
   )
@@ -224,7 +242,7 @@ export function CameraGrid() {
       {/* Controls bar */}
       <div className="flex items-center gap-2">
         {expandedId ? (
-          <button onClick={() => setExpandedId(null)}
+          <button onClick={handleExitFullscreen}
             className="text-xs px-3 py-1 rounded-md border border-surface-600 text-text-secondary hover:text-text-primary flex items-center gap-1.5">
             <X size={11} /> Exit fullscreen
           </button>
@@ -253,7 +271,7 @@ export function CameraGrid() {
           <ErrorBoundary key={cam.id}>
             <CameraCard camera={cam}
               expanded={expandedId === cam.id}
-              onExpand={() => setExpandedId(expandedId === cam.id ? null : cam.id)}
+              onExpand={() => handleToggleExpand(cam.id)}
               onPersonClick={(personId) => handlePersonClick(cam.id, personId)} />
           </ErrorBoundary>
         ))}

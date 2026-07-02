@@ -253,7 +253,7 @@ class APIClient:
         except aiohttp.ClientConnectorError:
             logger.debug(f"Backend unreachable, skipping POST to {path}")
         except Exception as e:
-            logger.debug(f"POST {path} error: {e}")
+            logger.debug(f"POST {path} error: {e!r}")
 
     async def _patch(self, path: str, payload: dict) -> None:
         if not self._session:

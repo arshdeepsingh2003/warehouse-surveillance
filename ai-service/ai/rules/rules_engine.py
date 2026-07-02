@@ -74,6 +74,26 @@ class Rule:
 
 RULES: list[Rule] = [
     Rule(
+        trigger_flag  = AnomalyFlag.THEFT_DETECTED,
+        alert_type    = "theft_attempt",
+        severity      = "high",
+        min_dwell     = 0.0,
+        description_fn= lambda r: (
+            f"Theft attempt detected for person {r.person_id} in '{r.zone_name}'. "
+            f"VLM: {r.description}"
+        ),
+    ),
+    Rule(
+        trigger_flag  = AnomalyFlag.MISCONDUCT_DETECTED,
+        alert_type    = "suspicious_activity",
+        severity      = "high",
+        min_dwell     = 0.0,
+        description_fn= lambda r: (
+            f"Safety violation / misconduct detected: {r.person_id} in '{r.zone_name}'. "
+            f"VLM: {r.description}"
+        ),
+    ),
+    Rule(
         trigger_flag  = AnomalyFlag.RESTRICTED_ZONE,
         alert_type    = "unauthorized_access",
         severity      = "high",
@@ -210,7 +230,7 @@ class RulesEngine:
                     continue   # Dwell threshold not met yet
 
                 # Check cooldown
-                cooldown_key = (result.person_id, rule.alert_type)
+                cooldown_key = (result.track_uuid or result.person_id, rule.alert_type)
                 now = time.monotonic()
                 last = self._last_fired.get(cooldown_key, 0.0)
                 if now - last < settings.ALERT_COOLDOWN_SECONDS:
